@@ -519,7 +519,13 @@ impl eframe::App for ZenShotApp {
         // on a toolbar.
         let mouse_on_toolbar = on_toolbar && matches!(self.drag_state, DragState::None);
 
-        let mut desired_cursor = CursorIcon::Crosshair;
+        // Lightshot keeps the plain arrow over its floating toolbars; the
+        // crosshair is only the selection and drawing cursor.
+        let mut desired_cursor = if mouse_on_toolbar {
+            CursorIcon::Default
+        } else {
+            CursorIcon::Crosshair
+        };
         let active_color = self.current_color();
 
         // 4. Mouse Drag State Machine (ONLY processes if mouse is NOT over toolbar)
