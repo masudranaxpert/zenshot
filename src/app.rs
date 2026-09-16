@@ -5,7 +5,7 @@ use chrono::Local;
 use eframe::egui::{
     self, Color32, CursorIcon, ImageButton, Key, Pos2, Rect, Stroke, Vec2,
 };
-use image::{Rgba, RgbaImage};
+use image::RgbaImage;
 use std::fs;
 
 /// Handle position for resizing the selection.
@@ -81,6 +81,27 @@ pub const PALETTE: [Color32; 6] = [
     Color32::from_rgb(255, 255, 255), // White
 ];
 
+// Toolbar metrics recovered from the bitmap resources in Lightshot.dll: the
+// action bar ships as a 204x29 strip holding 7 buttons of 24x20, and the tool bar
+// as a 29x204 strip holding 8 buttons of 20x20. Those two solve exactly for the
+// padding/gap/margin below.
+const H_ICON: Vec2 = Vec2::new(24.0, 20.0);
+const V_ICON: Vec2 = Vec2::new(20.0, 20.0);
+const BAR_THICKNESS: f32 = 29.0;
+const BTN_PAD: f32 = 2.0;
+const BTN_GAP: f32 = 1.0;
+const BAR_MARGIN: f32 = 2.0;
+
+/// Buttons on the action bar: Print, Copy, Save, Close.
+const H_ACTION_COUNT: f32 = 4.0;
+/// Buttons on the tool bar: Pen, Line, Arrow, Rect, Marker, Text, Color, Undo.
+const V_TOOL_COUNT: f32 = 8.0;
+
+/// Length of a toolbar along its main axis for `n` buttons of `icon` extent.
+fn bar_length(n: f32, icon: f32) -> f32 {
+    n * (icon + 2.0 * BTN_PAD) + (n - 1.0) * BTN_GAP + 2.0 * BAR_MARGIN
+}
+
 /// Dragging interaction state.
 #[derive(Debug, Clone)]
 enum DragState {
@@ -107,6 +128,7 @@ pub struct ZenShotApp {
     annotations: Vec<Annotation>,
     text_input: String,
     active_text_pos: Option<Pos2>,
+    last_pointer: Pos2,
 }
 
 impl ZenShotApp {
@@ -123,6 +145,7 @@ impl ZenShotApp {
             annotations: Vec::new(),
             text_input: String::new(),
             active_text_pos: None,
+            last_pointer: Pos2::ZERO,
         }
     }
 
@@ -137,27 +160,44 @@ impl ZenShotApp {
     }
 
     /// Performs in-memory crop with burned annotations.
-    fn crop_current_selection(&self, screen_rect: Rect) -> Option<RgbaImage> {
+    fn crop_current_selection(&self, ctx: &egui::Context, screen_rect: Rect) -> Option<RgbaImage> {
         let sel = self.selection?;
-        Some(burn_and_crop(&self.screen_image, screen_rect, sel, &self.annotations))
+        Some(burn_and_crop(&self.screen_image, screen_rect, sel, &self.annotations, ctx))
     }
 
     /// Saves cropped image to configured path and exits immediately.
+    /// With nothing selected this is a no-op, matching Lightshot.
     fn action_save(&mut self, ctx: &egui::Context, screen_rect: Rect) {
-        if let Some(img) = self.crop_current_selection(screen_rect) {
-            let save_dir = self.config.resolve_save_dir();
-            let _ = fs::create_dir_all(&save_dir);
-            let filename = Local::now().format(&self.config.filename_format).to_string();
-            let dest_path = save_dir.join(filename);
-            let _ = img.save(&dest_path);
-        }
+        let Some(img) = self.crop_current_selection(ctx, screen_rect) else {
+            return;
+        };
+        let save_dir = self.config.resolve_save_dir();
+        let _ = fs::create_dir_all(&save_dir);
+        let filename = Local::now().format(&self.config.filename_format).to_string();
+        let dest_path = save_dir.join(filename);
+        let _ = img.save(&dest_path);
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
     /// Copies cropped image directly to clipboard in RAM and exits immediately.
     fn action_copy(&mut self, ctx: &egui::Context, screen_rect: Rect) {
-        if let Some(img) = self.crop_current_selection(screen_rect) {
-            let _ = copy_to_clipboard(&img);
+        let Some(img) = self.crop_current_selection(ctx, screen_rect) else {
+            return;
+        };
+        let _ = copy_to_clipboard(&img);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// Hands the cropped image to the system printer and exits.
+    /// Printing is the one path that has to touch disk, since both print
+    /// backends take a file rather than a stream.
+    fn action_print(&mut self, ctx: &egui::Context, screen_rect: Rect) {
+        let Some(img) = self.crop_current_selection(ctx, screen_rect) else {
+            return;
+        };
+        let path = std::env::temp_dir().join(format!("zenshot_print_{}.png", std::process::id()));
+        if img.save(&path).is_ok() {
+            let _ = spawn_print_job(&path);
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
@@ -186,14 +226,8 @@ impl ZenShotApp {
 
     /// Calculates exact screen bounds of the Horizontal and Vertical toolbars.
     fn get_toolbar_rects(&self, sel: Rect, screen_rect: Rect) -> (Rect, Rect) {
-        // Icons are 24x20 (h-bar) and 20x20 (v-bar) at 1x, + 4px button padding each side
-        let h_btn_w = 28.0; // 24px icon + 4px padding
-        let h_btn_h = 26.0; // 20px icon + 6px padding
-        let v_btn  = 26.0;  // 20x20 icon + 6px padding
-
-        // Horizontal toolbar: 4 core actions (Print, Copy, Save, Close)
-        let h_width  = 4.0 * h_btn_w + 6.0;
-        let h_height = h_btn_h + 6.0;
+        let h_width = bar_length(H_ACTION_COUNT, H_ICON.x);
+        let h_height = BAR_THICKNESS;
 
         let mut h_x = sel.right() - h_width;
         if h_x < screen_rect.left() + 4.0 {
@@ -208,8 +242,8 @@ impl ZenShotApp {
         let h_rect = Rect::from_min_size(Pos2::new(h_x, h_y), Vec2::new(h_width, h_height));
 
         // Vertical toolbar: 8 drawing tools (Pen, Line, Arrow, Rect, Marker, Text, Color, Undo)
-        let v_width  = v_btn + 6.0;
-        let v_height = 8.0 * v_btn + 10.0;
+        let v_width = BAR_THICKNESS;
+        let v_height = bar_length(V_TOOL_COUNT, V_ICON.y);
 
         let mut v_x = sel.right() + 4.0;
         if v_x + v_width > screen_rect.right() - 4.0 {
@@ -307,34 +341,68 @@ impl eframe::App for ZenShotApp {
 
         let screen_rect = ctx.screen_rect();
 
-        // 2. Global Hotkeys
-        if ctx.input(|i| i.key_pressed(Key::Escape)) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            return;
-        }
-        if ctx.input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(Key::C)) {
-            self.action_copy(ctx, screen_rect);
-            return;
-        }
-        if ctx.input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(Key::S)) {
-            self.action_save(ctx, screen_rect);
-            return;
-        }
-        if ctx.input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(Key::Z)) {
-            self.annotations.pop();
+        // 2. Global hotkeys. The accelerator strings in Lightshot.dll pair up as
+        // Esc/Ctrl+X close, Ctrl+A full screen, Ctrl+C copy, Ctrl+S save,
+        // Ctrl+P print and Ctrl+Z undo.
+        // They stay inert while the text tool has focus, otherwise typing would
+        // close the overlay or eat the keystroke.
+        if self.active_text_pos.is_some() {
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                self.active_text_pos = None;
+                self.text_input.clear();
+            }
+        } else {
+            let hit = |key: Key| {
+                ctx.input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(key))
+            };
+
+            if ctx.input(|i| i.key_pressed(Key::Escape)) || hit(Key::X) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+            if hit(Key::A) {
+                self.selection = Some(screen_rect);
+            }
+            if hit(Key::C) {
+                self.action_copy(ctx, screen_rect);
+                return;
+            }
+            if hit(Key::S) {
+                self.action_save(ctx, screen_rect);
+                return;
+            }
+            if hit(Key::P) {
+                self.action_print(ctx, screen_rect);
+                return;
+            }
+            if hit(Key::Z) {
+                self.annotations.pop();
+            }
         }
 
         // 3. Pointer and toolbar hover detection (CRITICAL: prevents toolbar clicks from resetting selection)
         let pointer = ctx.input(|i| i.pointer.clone());
-        let current_pos = pointer.hover_pos().unwrap_or(Pos2::ZERO);
+        // `hover_pos` is None whenever the cursor leaves the window; falling back
+        // to the origin would snap an in-progress selection to the top-left.
+        let current_pos = pointer.latest_pos().unwrap_or(self.last_pointer);
+        self.last_pointer = current_pos;
 
-        let mut mouse_on_toolbar = false;
-        if let Some(sel) = self.selection {
-            let (h_bar, v_bar) = self.get_toolbar_rects(sel, screen_rect);
-            if h_bar.contains(current_pos) || v_bar.contains(current_pos) {
-                mouse_on_toolbar = true;
-            }
+        // Right-click clears the selection, as in Lightshot.
+        if pointer.secondary_clicked() {
+            self.selection = None;
+            self.annotations.clear();
+            self.drag_state = DragState::None;
         }
+
+        let on_toolbar = self.selection.is_some_and(|sel| {
+            let (h_bar, v_bar) = self.get_toolbar_rects(sel, screen_rect);
+            h_bar.contains(current_pos) || v_bar.contains(current_pos)
+        });
+
+        // Only block *starting* a new interaction. Blocking the whole state
+        // machine would strand an in-progress drag whose release happens to land
+        // on a toolbar.
+        let mouse_on_toolbar = on_toolbar && matches!(self.drag_state, DragState::None);
 
         let mut desired_cursor = CursorIcon::Crosshair;
         let active_color = self.current_color();
@@ -679,25 +747,25 @@ impl ZenShotApp {
 
         // --- 1. HORIZONTAL ACTION TOOLBAR (Bottom) ---
         // Draw with painter for exact Lightshot gradient (250,251,251) -> (211,214,217) + shadow
-        let h_btn_size = Vec2::new(24.0, 20.0); // 1x icon from Lightshot DLL
+        let h_btn_size = H_ICON;
         paint_lightshot_toolbar(ui.painter(), h_rect);
-        let h_builder = egui::UiBuilder::new().max_rect(h_rect.shrink(3.0));
+        let h_builder = egui::UiBuilder::new().max_rect(h_rect.shrink(BAR_MARGIN));
         ui.allocate_new_ui(h_builder, |ui| {
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing = Vec2::new(1.0, 0.0);
-                ui.spacing_mut().button_padding = Vec2::new(2.0, 3.0);
+                ui.spacing_mut().item_spacing = Vec2::new(BTN_GAP, 0.0);
+                ui.spacing_mut().button_padding = Vec2::splat(BTN_PAD);
 
                 if let Some(icons) = &self.icons {
                     if ui.add(lightshot_btn(egui::Image::new(&icons.print).fit_to_exact_size(h_btn_size))).on_hover_text("Print (Ctrl+P)").clicked() {
                         action = ToolbarAction::Print;
                     }
-                    if ui.add(lightshot_btn(egui::Image::new(&icons.copy).fit_to_exact_size(h_btn_size))).on_hover_text("Copy to Clipboard (Ctrl+C)").clicked() {
+                    if ui.add(lightshot_btn(egui::Image::new(&icons.copy).fit_to_exact_size(h_btn_size))).on_hover_text("Copy (Ctrl+C)").clicked() {
                         action = ToolbarAction::Copy;
                     }
-                    if ui.add(lightshot_btn(egui::Image::new(&icons.save).fit_to_exact_size(h_btn_size))).on_hover_text("Save to disk (Ctrl+S)").clicked() {
+                    if ui.add(lightshot_btn(egui::Image::new(&icons.save).fit_to_exact_size(h_btn_size))).on_hover_text("Save (Ctrl+S)").clicked() {
                         action = ToolbarAction::Save;
                     }
-                    if ui.add(lightshot_btn(egui::Image::new(&icons.close).fit_to_exact_size(h_btn_size))).on_hover_text("Cancel (Esc)").clicked() {
+                    if ui.add(lightshot_btn(egui::Image::new(&icons.close).fit_to_exact_size(h_btn_size))).on_hover_text("Close (Ctrl+X)").clicked() {
                         action = ToolbarAction::Close;
                     }
                 }
@@ -705,13 +773,13 @@ impl ZenShotApp {
         });
 
         // --- 2. VERTICAL DRAWING TOOLBAR (Right) ---
-        let v_btn_size = Vec2::splat(20.0); // 1x icon size for drawing tools
+        let v_btn_size = V_ICON;
         paint_lightshot_toolbar(ui.painter(), v_rect);
-        let v_builder = egui::UiBuilder::new().max_rect(v_rect.shrink(3.0));
+        let v_builder = egui::UiBuilder::new().max_rect(v_rect.shrink(BAR_MARGIN));
         ui.allocate_new_ui(v_builder, |ui| {
             ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing = Vec2::new(0.0, 1.0);
-                ui.spacing_mut().button_padding = Vec2::new(2.0, 2.0);
+                ui.spacing_mut().item_spacing = Vec2::new(0.0, BTN_GAP);
+                ui.spacing_mut().button_padding = Vec2::splat(BTN_PAD);
 
                 if let Some(icons) = &self.icons {
                     let btn = lightshot_btn(egui::Image::new(&icons.pen).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Pen);
@@ -766,7 +834,7 @@ impl ZenShotApp {
             ToolbarAction::Copy => self.action_copy(ctx, screen_rect),
             ToolbarAction::Save => self.action_save(ctx, screen_rect),
             ToolbarAction::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            ToolbarAction::Print => self.action_save(ctx, screen_rect),
+            ToolbarAction::Print => self.action_print(ctx, screen_rect),
             ToolbarAction::SelectTool(tool) => {
                 self.current_tool = tool;
             }
@@ -778,6 +846,28 @@ impl ZenShotApp {
             }
         }
     }
+}
+
+/// Sends a PNG on disk to the default printer via the platform's print helper.
+fn spawn_print_job(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("mspaint");
+        c.arg("/p").arg(path);
+        c
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = {
+        let mut c = std::process::Command::new("lp");
+        c.arg(path);
+        c
+    };
+
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
 }
 
 /// Normalizes a rectangle ensuring min <= max.
@@ -841,6 +931,7 @@ pub fn burn_and_crop(
     screen_rect: Rect,
     selection: Rect,
     annotations: &[Annotation],
+    ctx: &egui::Context,
 ) -> RgbaImage {
     let scale_x = orig.width() as f32 / screen_rect.width();
     let scale_y = orig.height() as f32 / screen_rect.height();
@@ -855,116 +946,100 @@ pub fn burn_and_crop(
 
     let mut cropped = image::imageops::crop_imm(orig, sel_min_x, sel_min_y, width, height).to_image();
 
+    // Each annotation is accumulated into a coverage mask and blended in one
+    // pass. Blending per segment instead would darken every stroke overlap and
+    // every joint, which is very visible with the translucent marker.
+    let mut mask = vec![false; (width * height) as usize];
+    let size = (width, height);
+    let to_local = |p: Pos2| {
+        (
+            ((p.x - selection.min.x) * scale_x).round() as i32,
+            ((p.y - selection.min.y) * scale_y).round() as i32,
+        )
+    };
+
     for ann in annotations {
+        mask.fill(false);
+
         match ann {
             Annotation::Rectangle { rect, color, thickness } => {
-                let box_min_x = (((rect.min.x - selection.min.x) * scale_x).round() as i32).max(0);
-                let box_min_y = (((rect.min.y - selection.min.y) * scale_y).round() as i32).max(0);
-                let box_max_x = (((rect.max.x - selection.min.x) * scale_x).round() as i32).min(width as i32 - 1);
-                let box_max_y = (((rect.max.y - selection.min.y) * scale_y).round() as i32).min(height as i32 - 1);
-
-                if box_max_x <= box_min_x || box_max_y <= box_min_y {
+                let (min_x, min_y) = to_local(rect.min);
+                let (max_x, max_y) = to_local(rect.max);
+                if max_x <= min_x || max_y <= min_y {
                     continue;
                 }
-
-                let t_val = (*thickness * scale_x).round().max(1.0) as i32;
-                let rgba = Rgba([color.r(), color.g(), color.b(), 255]);
-
-                // Draw top/bottom borders
-                for t in 0..t_val {
-                    let y_top = box_min_y + t;
-                    let y_bot = box_max_y - t;
-                    for x in box_min_x..=box_max_x {
-                        if y_top >= 0 && y_top < height as i32 && x >= 0 && x < width as i32 {
-                            cropped.put_pixel(x as u32, y_top as u32, rgba);
-                        }
-                        if y_bot >= 0 && y_bot < height as i32 && x >= 0 && x < width as i32 {
-                            cropped.put_pixel(x as u32, y_bot as u32, rgba);
-                        }
-                    }
-                }
-
-                // Draw left/right borders
-                for t in 0..t_val {
-                    let x_left = box_min_x + t;
-                    let x_right = box_max_x - t;
-                    for y in box_min_y..=box_max_y {
-                        if x_left >= 0 && x_left < width as i32 && y >= 0 && y < height as i32 {
-                            cropped.put_pixel(x_left as u32, y as u32, rgba);
-                        }
-                        if x_right >= 0 && x_right < width as i32 && y >= 0 && y < height as i32 {
-                            cropped.put_pixel(x_right as u32, y as u32, rgba);
-                        }
-                    }
-                }
+                let t = stroke_px(*thickness, scale_x);
+                mask_line(&mut mask, size, (min_x, min_y), (max_x, min_y), t);
+                mask_line(&mut mask, size, (max_x, min_y), (max_x, max_y), t);
+                mask_line(&mut mask, size, (max_x, max_y), (min_x, max_y), t);
+                mask_line(&mut mask, size, (min_x, max_y), (min_x, min_y), t);
+                blend_mask(&mut cropped, &mask, *color);
             }
             Annotation::Arrow { start, end, color, thickness } => {
-                let sx = ((start.x - selection.min.x) * scale_x).round() as i32;
-                let sy = ((start.y - selection.min.y) * scale_y).round() as i32;
-                let ex = ((end.x - selection.min.x) * scale_x).round() as i32;
-                let ey = ((end.y - selection.min.y) * scale_y).round() as i32;
-
-                let t_val = (*thickness * scale_x).round().max(1.0) as i32;
-                let rgba = Rgba([color.r(), color.g(), color.b(), 255]);
-
-                rasterize_line(&mut cropped, sx, sy, ex, ey, t_val, rgba);
+                let (sx, sy) = to_local(*start);
+                let (ex, ey) = to_local(*end);
+                let t = stroke_px(*thickness, scale_x);
+                mask_line(&mut mask, size, (sx, sy), (ex, ey), t);
 
                 let dx = (ex - sx) as f32;
                 let dy = (ey - sy) as f32;
                 let len = (dx * dx + dy * dy).sqrt();
                 if len > 6.0 {
-                    let norm_x = dx / len;
-                    let norm_y = dy / len;
-                    let head_size = (t_val as f32 * 4.0).clamp(10.0, 22.0);
-                    let perp_x = -norm_y * (head_size * 0.45);
-                    let perp_y = norm_x * (head_size * 0.45);
+                    let (nx, ny) = (dx / len, dy / len);
+                    let head = (t as f32 * 4.0).clamp(10.0, 22.0);
+                    let (px, py) = (-ny * head * 0.45, nx * head * 0.45);
 
-                    let lx = (ex as f32 - norm_x * head_size + perp_x).round() as i32;
-                    let ly = (ey as f32 - norm_y * head_size + perp_y).round() as i32;
-                    let rx = (ex as f32 - norm_x * head_size - perp_x).round() as i32;
-                    let ry = (ey as f32 - norm_y * head_size - perp_y).round() as i32;
+                    let lx = (ex as f32 - nx * head + px).round() as i32;
+                    let ly = (ey as f32 - ny * head + py).round() as i32;
+                    let rx = (ex as f32 - nx * head - px).round() as i32;
+                    let ry = (ey as f32 - ny * head - py).round() as i32;
 
-                    rasterize_line(&mut cropped, ex, ey, lx, ly, t_val, rgba);
-                    rasterize_line(&mut cropped, ex, ey, rx, ry, t_val, rgba);
+                    mask_line(&mut mask, size, (ex, ey), (lx, ly), t);
+                    mask_line(&mut mask, size, (ex, ey), (rx, ry), t);
                 }
+                blend_mask(&mut cropped, &mask, *color);
             }
             Annotation::Line { start, end, color, thickness } => {
-                let sx = ((start.x - selection.min.x) * scale_x).round() as i32;
-                let sy = ((start.y - selection.min.y) * scale_y).round() as i32;
-                let ex = ((end.x - selection.min.x) * scale_x).round() as i32;
-                let ey = ((end.y - selection.min.y) * scale_y).round() as i32;
-                let t_val = (*thickness * scale_x).round().max(1.0) as i32;
-                let rgba = Rgba([color.r(), color.g(), color.b(), 255]);
-                rasterize_line(&mut cropped, sx, sy, ex, ey, t_val, rgba);
+                let t = stroke_px(*thickness, scale_x);
+                mask_line(&mut mask, size, to_local(*start), to_local(*end), t);
+                blend_mask(&mut cropped, &mask, *color);
             }
-            Annotation::Pen { points, color, thickness } | Annotation::Marker { points, color, thickness } => {
-                let t_val = (*thickness * scale_x).round().max(1.0) as i32;
-                let rgba = Rgba([color.r(), color.g(), color.b(), color.a()]);
-
+            Annotation::Pen { points, color, thickness }
+            | Annotation::Marker { points, color, thickness } => {
+                let t = stroke_px(*thickness, scale_x);
                 for window in points.windows(2) {
-                    let p1 = window[0];
-                    let p2 = window[1];
-                    let x1 = ((p1.x - selection.min.x) * scale_x).round() as i32;
-                    let y1 = ((p1.y - selection.min.y) * scale_y).round() as i32;
-                    let x2 = ((p2.x - selection.min.x) * scale_x).round() as i32;
-                    let y2 = ((p2.y - selection.min.y) * scale_y).round() as i32;
-
-                    rasterize_line(&mut cropped, x1, y1, x2, y2, t_val, rgba);
+                    mask_line(&mut mask, size, to_local(window[0]), to_local(window[1]), t);
                 }
+                blend_mask(&mut cropped, &mask, *color);
             }
-            Annotation::Text { .. } => {}
+            Annotation::Text { pos, text, color, size } => {
+                let origin = *pos - selection.min.to_vec2();
+                let scale = Vec2::new(scale_x, scale_y);
+                burn_text(&mut cropped, ctx, origin, (text, *color, *size), scale);
+            }
         }
     }
 
     cropped
 }
 
-/// Robust Bresenham line rasterizer with configurable thickness.
-fn rasterize_line(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, thickness: i32, color: Rgba<u8>) {
+/// Stroke width in image pixels, never thinner than one pixel.
+fn stroke_px(thickness: f32, scale: f32) -> i32 {
+    (thickness * scale).round().max(1.0) as i32
+}
+
+/// Marks a thick Bresenham line into a `w` x `h` coverage mask.
+fn mask_line(
+    mask: &mut [bool],
+    (w, h): (u32, u32),
+    (x0, y0): (i32, i32),
+    (x1, y1): (i32, i32),
+    thickness: i32,
+) {
     let dx = (x1 - x0).abs();
     let dy = -(y1 - y0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let sy = if y0 < y1 { 1 } else { -1 };
+    let step_x = if x0 < x1 { 1 } else { -1 };
+    let step_y = if y0 < y1 { 1 } else { -1 };
     let mut err = dx + dy;
 
     let mut curr_x = x0;
@@ -976,18 +1051,8 @@ fn rasterize_line(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, thick
             for ox in -radius..=radius {
                 let px = curr_x + ox;
                 let py = curr_y + oy;
-                if px >= 0 && px < img.width() as i32 && py >= 0 && py < img.height() as i32 {
-                    if color.0[3] < 255 {
-                        let existing = img.get_pixel(px as u32, py as u32);
-                        let a_f = color.0[3] as f32 / 255.0;
-                        let inv_a = 1.0 - a_f;
-                        let r = (color.0[0] as f32 * a_f + existing.0[0] as f32 * inv_a) as u8;
-                        let g = (color.0[1] as f32 * a_f + existing.0[1] as f32 * inv_a) as u8;
-                        let b = (color.0[2] as f32 * a_f + existing.0[2] as f32 * inv_a) as u8;
-                        img.put_pixel(px as u32, py as u32, Rgba([r, g, b, 255]));
-                    } else {
-                        img.put_pixel(px as u32, py as u32, color);
-                    }
+                if px >= 0 && px < w as i32 && py >= 0 && py < h as i32 {
+                    mask[py as usize * w as usize + px as usize] = true;
                 }
             }
         }
@@ -999,11 +1064,91 @@ fn rasterize_line(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, thick
         let e2 = 2 * err;
         if e2 >= dy {
             err += dy;
-            curr_x += sx;
+            curr_x += step_x;
         }
         if e2 <= dx {
             err += dx;
-            curr_y += sy;
+            curr_y += step_y;
+        }
+    }
+}
+
+/// Composites a single colour over every pixel the mask covers.
+fn blend_mask(img: &mut RgbaImage, mask: &[bool], color: Color32) {
+    let w = img.width();
+    for (idx, covered) in mask.iter().enumerate() {
+        if !covered {
+            continue;
+        }
+        let idx = idx as u32;
+        blend_pixel(img, idx % w, idx / w, color, 1.0);
+    }
+}
+
+/// Source-over blend of `color` at `coverage` onto one opaque pixel.
+fn blend_pixel(img: &mut RgbaImage, x: u32, y: u32, color: Color32, coverage: f32) {
+    let alpha = coverage * (color.a() as f32 / 255.0);
+    if alpha <= 0.0 {
+        return;
+    }
+    let inv = 1.0 - alpha;
+    let dst = img.get_pixel_mut(x, y);
+    dst.0[0] = (color.r() as f32 * alpha + dst.0[0] as f32 * inv).round() as u8;
+    dst.0[1] = (color.g() as f32 * alpha + dst.0[1] as f32 * inv).round() as u8;
+    dst.0[2] = (color.b() as f32 * alpha + dst.0[2] as f32 * inv).round() as u8;
+    dst.0[3] = 255;
+}
+
+/// Burns laid-out text by sampling coverage straight out of egui's font atlas,
+/// so the saved PNG uses the same glyphs the overlay previewed.
+fn burn_text(
+    img: &mut RgbaImage,
+    ctx: &egui::Context,
+    origin: Pos2,
+    (text, color, size): (&str, Color32, f32),
+    scale: Vec2,
+) {
+    let (scale_x, scale_y) = (scale.x, scale.y);
+    let galley =
+        ctx.fonts(|f| f.layout_no_wrap(text.to_owned(), egui::FontId::proportional(size), color));
+    let atlas = ctx.fonts(|f| f.image());
+    let atlas_w = atlas.size[0];
+
+    for row in &galley.rows {
+        for glyph in &row.glyphs {
+            let uv = glyph.uv_rect;
+            if uv.is_nothing() {
+                continue;
+            }
+            let src_w = u32::from(uv.max[0] - uv.min[0]);
+            let src_h = u32::from(uv.max[1] - uv.min[1]);
+            if src_w == 0 || src_h == 0 {
+                continue;
+            }
+
+            let top_left = origin + glyph.pos.to_vec2() + uv.offset;
+            let dst_x = (top_left.x * scale_x).round() as i32;
+            let dst_y = (top_left.y * scale_y).round() as i32;
+            let dst_w = (uv.size.x * scale_x).round().max(1.0) as u32;
+            let dst_h = (uv.size.y * scale_y).round().max(1.0) as u32;
+
+            for row_px in 0..dst_h {
+                let y = dst_y + row_px as i32;
+                if y < 0 || y >= img.height() as i32 {
+                    continue;
+                }
+                let src_y = u32::from(uv.min[1]) + row_px * src_h / dst_h;
+
+                for col_px in 0..dst_w {
+                    let x = dst_x + col_px as i32;
+                    if x < 0 || x >= img.width() as i32 {
+                        continue;
+                    }
+                    let src_x = u32::from(uv.min[0]) + col_px * src_w / dst_w;
+                    let coverage = atlas.pixels[src_y as usize * atlas_w + src_x as usize];
+                    blend_pixel(img, x as u32, y as u32, color, coverage.min(1.0));
+                }
+            }
         }
     }
 }
@@ -1011,6 +1156,7 @@ fn rasterize_line(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, thick
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::Rgba;
 
     #[test]
     fn test_normalize_rect_handles_inverted_drag() {
@@ -1038,7 +1184,7 @@ mod tests {
             thickness: 2.0,
         };
 
-        let cropped = burn_and_crop(&orig, screen_rect, selection, &[box_annotation]);
+        let cropped = burn_and_crop(&orig, screen_rect, selection, &[box_annotation], &test_ctx());
 
         assert_eq!(cropped.width(), 100);
         assert_eq!(cropped.height(), 100);
@@ -1067,8 +1213,38 @@ mod tests {
             thickness: 2.0,
         };
 
-        let cropped = burn_and_crop(&orig, screen_rect, selection, &[arrow]);
+        let cropped = burn_and_crop(&orig, screen_rect, selection, &[arrow], &test_ctx());
         let line_pixel = cropped.get_pixel(30, 10);
         assert_eq!(*line_pixel, Rgba([0, 255, 0, 255]));
+    }
+
+    #[test]
+    fn test_burn_and_crop_burns_text_into_pixels() {
+        let mut orig = RgbaImage::new(200, 100);
+        for pixel in orig.pixels_mut() {
+            *pixel = Rgba([0, 0, 0, 255]);
+        }
+
+        let screen_rect = Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 100.0));
+        let selection = Rect::from_min_size(Pos2::ZERO, Vec2::new(200.0, 100.0));
+
+        let text = Annotation::Text {
+            pos: Pos2::new(10.0, 10.0),
+            text: "ZenShot".to_string(),
+            color: Color32::from_rgb(255, 0, 0),
+            size: 24.0,
+        };
+
+        let cropped = burn_and_crop(&orig, screen_rect, selection, &[text], &test_ctx());
+
+        let painted = cropped.pixels().filter(|p| p.0[0] > 0).count();
+        assert!(painted > 0, "text annotation was not burned into the image");
+    }
+
+    /// Fonts are only available after the context has run a frame.
+    fn test_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        ctx
     }
 }
