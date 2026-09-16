@@ -56,7 +56,7 @@ chmod +x package_deb.sh
 Ensure build dependencies are installed on Ubuntu:
 ```bash
 sudo apt update
-sudo apt install -y pkg-config libpipewire-0.3-dev libspa-0.2-dev libclang-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libx11-dev
+sudo apt install -y pkg-config libpipewire-0.3-dev libspa-0.2-dev libclang-dev libegl1-mesa-dev libgl1-mesa-dev libgbm-dev libwayland-dev libxkbcommon-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libx11-dev
 chmod +x install.sh
 ./install.sh
 ```
