@@ -1,9 +1,9 @@
 use crate::clipboard::copy_to_clipboard;
 use crate::config::Config;
-use crate::icons::ToolbarIcons;
+use crate::icons::{IconPair, ToolbarIcons};
 use chrono::Local;
 use eframe::egui::{
-    self, Color32, CursorIcon, ImageButton, Key, Pos2, Rect, Stroke, Vec2,
+    self, Color32, CursorIcon, Key, Pos2, Rect, Stroke, Vec2,
 };
 use image::RgbaImage;
 use std::fs;
@@ -413,40 +413,32 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t).round() as u8
 }
 
-/// Creates an ImageButton styled to match Lightshot's toolbar button.
-/// The frame has to stay enabled: egui zeroes `button_padding` for frameless
-/// image buttons, which would shrink each button to its bare icon and leave the
-/// bar longer than its contents. `style_toolbar_buttons` makes the idle frame
-/// invisible instead.
-fn lightshot_btn(image: egui::Image<'static>) -> ImageButton<'static> {
-    ImageButton::new(image.rounding(2.0))
-}
+/// One toolbar cell rendered the way Lightshot does it: the near-black glyph
+/// while idle, the cyan-blue glyph on hover or when the tool is selected, plus
+/// the original soft hover highlight. The cell keeps the icon plus one
+/// `BTN_PAD` of hit area on every side so `bar_length` math stays exact.
+fn icon_button(ui: &mut egui::Ui, icon: &IconPair, size: Vec2, active: bool, tip: &str) -> egui::Response {
+    let cell = size + Vec2::splat(2.0 * BTN_PAD);
+    let (rect, resp) = ui.allocate_exact_size(cell, egui::Sense::click());
+    let hovered = resp.hovered() || resp.is_pointer_button_down_on();
 
-/// Lightshot's buttons are flat until hovered, then pick up a soft highlight
-/// with a thin border; the selected tool stays pressed in.
-fn style_toolbar_buttons(ui: &mut egui::Ui) {
-    ui.spacing_mut().button_padding = Vec2::splat(BTN_PAD);
+    let border = Stroke::new(1.0_f32, Color32::from_rgb(166, 178, 190));
+    if active {
+        ui.painter().rect_filled(rect, 2.0, Color32::from_black_alpha(30));
+        ui.painter().rect_stroke(rect, 2.0, border);
+    } else if hovered {
+        ui.painter().rect_filled(rect, 2.0, Color32::from_white_alpha(150));
+        ui.painter().rect_stroke(rect, 2.0, border);
+    }
 
-    let rounding = egui::Rounding::same(2.0);
-    let border = Color32::from_rgb(166, 178, 190);
-    let visuals = ui.visuals_mut();
+    // The 2x originals are downsampled by the GPU through a mipmapped linear
+    // texture, so the glyphs stay perfectly smooth at any display scaling.
+    egui::Image::new(icon.get(active || hovered))
+        .fit_to_exact_size(size)
+        .rounding(2.0)
+        .paint_at(ui, rect);
 
-    visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-    visuals.widgets.inactive.bg_stroke = Stroke::NONE;
-    visuals.widgets.inactive.rounding = rounding;
-
-    visuals.widgets.hovered.weak_bg_fill = Color32::from_white_alpha(150);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, border);
-    visuals.widgets.hovered.rounding = rounding;
-    visuals.widgets.hovered.expansion = 0.0;
-
-    visuals.widgets.active.weak_bg_fill = Color32::from_black_alpha(26);
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, border);
-    visuals.widgets.active.rounding = rounding;
-    visuals.widgets.active.expansion = 0.0;
-
-    visuals.selection.bg_fill = Color32::from_black_alpha(30);
-    visuals.selection.stroke = Stroke::new(1.0_f32, border);
+    resp.on_hover_text(tip)
 }
 
 impl eframe::App for ZenShotApp {
@@ -874,19 +866,18 @@ impl ZenShotApp {
         ui.allocate_new_ui(h_builder, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(BTN_GAP, 0.0);
-                style_toolbar_buttons(ui);
 
                 if let Some(icons) = &self.icons {
-                    if ui.add(lightshot_btn(egui::Image::new(&icons.print).fit_to_exact_size(h_btn_size))).on_hover_text("Print (Ctrl+P)").clicked() {
+                    if icon_button(ui, &icons.print, h_btn_size, false, "Print (Ctrl+P)").clicked() {
                         action = ToolbarAction::Print;
                     }
-                    if ui.add(lightshot_btn(egui::Image::new(&icons.copy).fit_to_exact_size(h_btn_size))).on_hover_text("Copy (Ctrl+C)").clicked() {
+                    if icon_button(ui, &icons.copy, h_btn_size, false, "Copy (Ctrl+C)").clicked() {
                         action = ToolbarAction::Copy;
                     }
-                    if ui.add(lightshot_btn(egui::Image::new(&icons.save).fit_to_exact_size(h_btn_size))).on_hover_text("Save (Ctrl+S)").clicked() {
+                    if icon_button(ui, &icons.save, h_btn_size, false, "Save (Ctrl+S)").clicked() {
                         action = ToolbarAction::Save;
                     }
-                    if ui.add(lightshot_btn(egui::Image::new(&icons.close).fit_to_exact_size(h_btn_size))).on_hover_text("Close (Ctrl+X)").clicked() {
+                    if icon_button(ui, &icons.close, h_btn_size, false, "Close (Ctrl+X)").clicked() {
                         action = ToolbarAction::Close;
                     }
                 }
@@ -900,56 +891,48 @@ impl ZenShotApp {
         ui.allocate_new_ui(v_builder, |ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(0.0, BTN_GAP);
-                style_toolbar_buttons(ui);
 
                 if let Some(icons) = &self.icons {
-                    let btn = lightshot_btn(egui::Image::new(&icons.pen).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Pen);
-                    if ui.add(btn).on_hover_text("Pen").clicked() {
+                    if icon_button(ui, &icons.pen, v_btn_size, current_tool == Tool::Pen, "Pen").clicked() {
                         action = ToolbarAction::SelectTool(if current_tool == Tool::Pen { Tool::Select } else { Tool::Pen });
                     }
-
-                    let btn = lightshot_btn(egui::Image::new(&icons.line).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Line);
-                    if ui.add(btn).on_hover_text("Line").clicked() {
+                    if icon_button(ui, &icons.line, v_btn_size, current_tool == Tool::Line, "Line").clicked() {
                         action = ToolbarAction::SelectTool(if current_tool == Tool::Line { Tool::Select } else { Tool::Line });
                     }
-
-                    let btn = lightshot_btn(egui::Image::new(&icons.arrow).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Arrow);
-                    if ui.add(btn).on_hover_text("Arrow").clicked() {
+                    if icon_button(ui, &icons.arrow, v_btn_size, current_tool == Tool::Arrow, "Arrow").clicked() {
                         action = ToolbarAction::SelectTool(if current_tool == Tool::Arrow { Tool::Select } else { Tool::Arrow });
                     }
-
-                    let btn = lightshot_btn(egui::Image::new(&icons.rect).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Rectangle);
-                    if ui.add(btn).on_hover_text("Rectangle").clicked() {
+                    if icon_button(ui, &icons.rect, v_btn_size, current_tool == Tool::Rectangle, "Rectangle").clicked() {
                         action = ToolbarAction::SelectTool(if current_tool == Tool::Rectangle { Tool::Select } else { Tool::Rectangle });
                     }
-
-                    let btn = lightshot_btn(egui::Image::new(&icons.marker).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Marker);
-                    if ui.add(btn).on_hover_text("Marker").clicked() {
+                    if icon_button(ui, &icons.marker, v_btn_size, current_tool == Tool::Marker, "Marker").clicked() {
                         action = ToolbarAction::SelectTool(if current_tool == Tool::Marker { Tool::Select } else { Tool::Marker });
                     }
-
-                    let btn = lightshot_btn(egui::Image::new(&icons.text).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Text);
-                    if ui.add(btn).on_hover_text("Text").clicked() {
+                    if icon_button(ui, &icons.text, v_btn_size, current_tool == Tool::Text, "Text").clicked() {
                         action = ToolbarAction::SelectTool(if current_tool == Tool::Text { Tool::Select } else { Tool::Text });
                     }
 
-                    // Colour swatch: a filled chip inset in a button-sized cell so
-                    // it lines up with the icons above and below it.
+                    // Colour swatch: Lightshot's own swatch frame tinted with
+                    // the active colour, sized to line up with the icons.
                     let cell = v_btn_size + Vec2::splat(2.0 * BTN_PAD);
                     let (rect, resp) = ui.allocate_exact_size(cell, egui::Sense::click());
-                    let chip = Rect::from_center_size(rect.center(), Vec2::splat(12.0));
-                    ui.painter().rect_filled(chip, 1.0_f32, current_color);
-                    ui.painter().rect_stroke(
-                        chip,
-                        1.0_f32,
-                        Stroke::new(1.0_f32, Color32::from_black_alpha(80)),
-                    );
+                    let border = Stroke::new(1.0_f32, Color32::from_rgb(166, 178, 190));
+                    if resp.hovered() || resp.is_pointer_button_down_on() {
+                        ui.painter().rect_filled(rect, 2.0, Color32::from_white_alpha(150));
+                        ui.painter().rect_stroke(rect, 2.0, border);
+                    }
+                    // The frame's centre is transparent in the original
+                    // resource: Lightshot fills the chip underneath it.
+                    ui.painter().rect_filled(rect.shrink(2.0 * BTN_PAD), 2.0, current_color);
+                    egui::Image::new(&icons.color)
+                        .fit_to_exact_size(v_btn_size)
+                        .rounding(2.0)
+                        .paint_at(ui, rect);
                     if resp.on_hover_text("Color (click to cycle)").clicked() {
                         action = ToolbarAction::CycleColor;
                     }
 
-                    let btn = lightshot_btn(egui::Image::new(&icons.undo).fit_to_exact_size(v_btn_size));
-                    if ui.add(btn).on_hover_text("Undo (Ctrl+Z)").clicked() {
+                    if icon_button(ui, &icons.undo, v_btn_size, false, "Undo (Ctrl+Z)").clicked() {
                         action = ToolbarAction::Undo;
                     }
                 }
