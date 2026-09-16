@@ -7,7 +7,16 @@ pub fn capture_screen() -> Result<RgbaImage, String> {
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
     unsafe {
+        // Without this the OS hands back a virtualized, downscaled desktop on
+        // any display running above 100% scaling, which shows up as a blurry
+        // screenshot.
+        let _ = windows_sys::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+            windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        );
+
         let hdc_screen = GetDC(std::ptr::null_mut());
+        // Primary monitor only: the overlay is a single fullscreen window, so the
+        // capture has to match its bounds for the crop math to line up.
         let width = GetSystemMetrics(SM_CXSCREEN);
         let height = GetSystemMetrics(SM_CYSCREEN);
 
@@ -26,7 +35,7 @@ pub fn capture_screen() -> Result<RgbaImage, String> {
         bi.bmiHeader.biCompression = BI_RGB;
 
         let mut raw = vec![0u8; (width * height * 4) as usize];
-        GetDIBits(
+        let scanlines = GetDIBits(
             hdc_mem,
             hbm,
             0,
@@ -40,6 +49,10 @@ pub fn capture_screen() -> Result<RgbaImage, String> {
         DeleteObject(hbm);
         DeleteDC(hdc_mem);
         ReleaseDC(std::ptr::null_mut(), hdc_screen);
+
+        if scanlines == 0 {
+            return Err("GetDIBits returned no scanlines".to_string());
+        }
 
         // Win32 GDI outputs BGRA; swap B and R channels to RGBA in RAM
         for chunk in raw.chunks_exact_mut(4) {

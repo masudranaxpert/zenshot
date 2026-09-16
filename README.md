@@ -21,15 +21,19 @@ Most desktop screenshot tools (like Flameshot) are bogged down by heavy runtimes
 
 ## ⌨️ Keyboard Shortcuts
 
+These mirror the accelerators Lightshot ships with, recovered from its binary.
+
 | Shortcut | Action |
 | :--- | :--- |
+| `Ctrl + A` | **Select full screen** |
 | `Ctrl + C` | **Instant Copy:** Crop in RAM, copy to clipboard & exit |
 | `Ctrl + S` | **Save:** Save timestamped PNG to configured directory & exit |
+| `Ctrl + P` | **Print:** Send the selection to the default printer & exit |
 | `Ctrl + Z` | **Undo:** Remove last drawn annotation |
-| `R` | Toggle **Rectangle Box** tool |
-| `A` | Toggle **Arrow** pointer tool |
-| `P` | Toggle **Freehand Pen** tool |
-| `Esc` | **Cancel:** Exit immediately without saving or copying |
+| `Ctrl + X` / `Esc` | **Close:** Exit immediately without saving or copying |
+| Right-click | **Clear selection** |
+
+Tools are selected from the vertical toolbar: Pen, Line, Arrow, Rectangle, Marker, Text, Color, Undo.
 
 ---
 

@@ -24,10 +24,14 @@ fn main() -> eframe::Result<()> {
         println!("  -h, --help  Show this help message");
         println!();
         println!("Shortcuts inside overlay:");
+        println!("  Ctrl+A      Select the full screen");
         println!("  Ctrl+C      Copy selection to clipboard in RAM & exit");
         println!("  Ctrl+S      Save screenshot to configured directory & exit");
+        println!("  Ctrl+P      Send selection to the default printer & exit");
         println!("  Ctrl+Z      Undo last drawn annotation");
-        println!("  Esc         Cancel and exit immediately (zero I/O)");
+        println!("  Ctrl+X      Close and exit immediately (zero I/O)");
+        println!("  Esc         Close and exit immediately (zero I/O)");
+        println!("  Right-click Clear the current selection");
         return Ok(());
     }
 
@@ -51,16 +55,15 @@ fn main() -> eframe::Result<()> {
         }
     };
 
-    let width = screen_image.width() as f32;
-    let height = screen_image.height() as f32;
-
+    // No `with_inner_size`: the capture is in physical pixels while the viewport
+    // expects logical points, so passing it through oversizes the window on any
+    // display above 100% scaling.
     let native_options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
             .with_title("ZenShot")
             .with_fullscreen(true)
             .with_decorations(false)
-            .with_always_on_top()
-            .with_inner_size([width, height]),
+            .with_always_on_top(),
         ..Default::default()
     };
 
