@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=LuminaShot
+GenericName=Screen Capture Tool
+Comment=Ultra-fast, featherlight cross-platform screenshot utility
+Exec=luminashot
+Icon=luminashot
+Terminal=false
+Type=Application
+Categories=Utility;Graphics;
+Keywords=screenshot;capture;lightshot;screen;snip;
+StartupNotify=false

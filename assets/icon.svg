@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6366f1" />
+      <stop offset="50%" stop-color="#8b5cf6" />
+      <stop offset="100%" stop-color="#d946ef" />
+    </linearGradient>
+    <linearGradient id="lensGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95" />
+      <stop offset="100%" stop-color="#e0e7ff" stop-opacity="0.85" />
+    </linearGradient>
+    <filter id="dropShadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="16" stdDeviation="24" flood-color="#4c1d95" flood-opacity="0.35" />
+    </filter>
+  </defs>
+
+  <!-- Background rounded squircle -->
+  <rect x="32" y="32" width="448" height="448" rx="112" fill="url(#bgGrad)" filter="url(#dropShadow)" />
+
+  <!-- Viewfinder corners -->
+  <path d="M 140 190 L 140 150 A 10 10 0 0 1 150 140 L 190 140" fill="none" stroke="#ffffff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M 322 140 L 362 140 A 10 10 0 0 1 372 150 L 372 190" fill="none" stroke="#ffffff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M 372 322 L 372 362 A 10 10 0 0 1 362 372 L 322 372" fill="none" stroke="#ffffff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M 190 372 L 150 372 A 10 10 0 0 1 140 362 L 140 322" fill="none" stroke="#ffffff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" />
+
+  <!-- Center camera lens / aperture -->
+  <circle cx="256" cy="256" r="74" fill="none" stroke="url(#lensGrad)" stroke-width="20" />
+  <circle cx="256" cy="256" r="32" fill="#ffffff" />
+  <circle cx="282" cy="230" r="10" fill="#ffffff" opacity="0.8" />
+
+  <!-- Light beam / spark in corner -->
+  <path d="M 350 162 L 372 140" stroke="#fef08a" stroke-width="10" stroke-linecap="round" />
+</svg>

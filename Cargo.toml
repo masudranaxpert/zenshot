@@ -1,0 +1,47 @@
+[package]
+name = "zenshot"
+version = "0.1.0"
+edition = "2021"
+authors = ["ZenShot Team <dev@zenshot.io>"]
+description = "Ultra-fast, featherlight cross-platform screen capture tool with zero disk I/O"
+readme = "README.md"
+license = "MIT"
+
+[dependencies]
+eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow"] }
+xcap = "0.9"
+arboard = "3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+chrono = "0.4"
+dirs = "5.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[package.metadata.deb]
+name = "zenshot"
+maintainer = "ZenShot Team <dev@zenshot.io>"
+copyright = "2026 ZenShot"
+extended-description = """
+ZenShot is an ultra-fast, featherlight screen capture utility.
+Features pure in-memory zero-disk copy, region selection, rectangle, arrow, and pen annotations,
+and on-demand file saving."""
+section = "graphics"
+priority = "optional"
+assets = [
+    ["target/release/zenshot", "usr/bin/", "755"],
+    ["zenshot.desktop", "usr/share/applications/", "644"],
+    ["assets/icon.svg", "usr/share/icons/hicolor/scalable/apps/zenshot.svg", "644"],
+]
