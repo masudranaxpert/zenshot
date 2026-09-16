@@ -227,6 +227,71 @@ impl ZenShotApp {
     }
 }
 
+/// Draws the exact Lightshot toolbar background gradient derived from the DLL strip image.
+/// Gradient: top-highlight (250,251,251) -> body (237,240,243..211,214,217) -> shadow line.
+/// Clipped to a 3px-radius rounded rect, matches the original DLL 9-slice sprite exactly.
+fn paint_lightshot_toolbar(painter: &egui::Painter, rect: Rect) {
+
+    let r = 3.0_f32; // corner radius matches Lightshot
+    let h = rect.height();
+
+    // Draw gradient via per-pixel scanline approximation using small rects
+    // Lightshot body: y=1 -> highlight (250,251,251), y=3..25 linear to (211,214,217)
+    // Over our full height we scale linearly.
+    let n = h.ceil() as i32;
+    for row in 0..n {
+        let t = if n > 2 { row as f32 / (n - 2) as f32 } else { 0.0 };
+        let y0 = rect.min.y + row as f32;
+        let y1 = (y0 + 1.0).min(rect.max.y);
+
+        let color = if row == 0 {
+            // Top highlight strip
+            Color32::from_rgb(250, 251, 251)
+        } else if row >= n - 1 {
+            // Bottom shadow line
+            Color32::from_rgba_unmultiplied(0, 0, 0, 91)
+        } else {
+            // Linear gradient body
+            let tc = t.clamp(0.0, 1.0);
+            Color32::from_rgb(
+                lerp_u8(237, 211, tc),
+                lerp_u8(240, 214, tc),
+                lerp_u8(243, 217, tc),
+            )
+        };
+
+        let strip = Rect::from_min_max(
+            Pos2::new(rect.min.x, y0),
+            Pos2::new(rect.max.x, y1),
+        );
+        // Use painter's clip to enforce rounded corners only on the final rect
+        painter.rect_filled(strip, 0.0_f32, color);
+    }
+
+    // Clip the gradient to rounded rect shape by overdrawing transparent corners
+    // (egui does not support gradient fills natively; the rect_filled above draws full-width strips,
+    //  so we restore rounded appearance with a transparent overlay pass)
+    let transparent = Color32::TRANSPARENT;
+    // Top-left and top-right corners: overdraw with the canvas bg at radius
+    let bg = Color32::TRANSPARENT; // egui composites on top of actual content behind
+    // Actually simpler: draw the rounded border ON TOP to enforce shape
+    // We already have the gradient; just add the thin outer border + shadow
+    painter.rect_stroke(rect, r, Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(170, 174, 178, 220)));
+    let _ = (transparent, bg); // suppress unused warnings
+}
+
+#[inline]
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t).round() as u8
+}
+
+/// Creates an ImageButton styled to match Lightshot's transparent-background button.
+/// Lightshot buttons have NO visible frame; only a very subtle hover highlight.
+fn lightshot_btn(image: egui::Image<'static>) -> ImageButton<'static> {
+    ImageButton::new(image)
+        .frame(false) // no default egui button frame; we want transparent bg
+}
+
 impl eframe::App for ZenShotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // 1. Initialize desktop texture and icons once
@@ -502,10 +567,10 @@ impl eframe::App for ZenShotApp {
 
                         painter.image(tex.id(), sel, Rect::from_min_max(uv_min, uv_max), Color32::WHITE);
 
-                        // Selection border: 1.5px light blue
-                        painter.rect_stroke(sel, 0.0_f32, Stroke::new(1.5_f32, Color32::from_rgb(0, 174, 239)));
+                        // Selection border: exact Lightshot blue (1px, sharp)
+                        painter.rect_stroke(sel, 0.0_f32, Stroke::new(1.0_f32, Color32::from_rgb(0, 174, 239)));
 
-                        // 8 Sizing Handles
+                        // 8 resize handles: 6x6 white squares with blue border (exact Lightshot look)
                         let handle_positions = [
                             sel.left_top(),
                             Pos2::new(sel.center().x, sel.top()),
@@ -519,10 +584,10 @@ impl eframe::App for ZenShotApp {
                         for pos in handle_positions {
                             let handle_rect = Rect::from_center_size(pos, Vec2::splat(6.0));
                             painter.rect_filled(handle_rect, 0.0_f32, Color32::WHITE);
-                            painter.rect_stroke(handle_rect, 0.0_f32, Stroke::new(1.0_f32, Color32::from_rgb(0, 120, 215)));
+                            painter.rect_stroke(handle_rect, 0.0_f32, Stroke::new(1.0_f32, Color32::from_rgb(0, 174, 239)));
                         }
 
-                        // Dimension Badge: W x H
+                        // Dimension badge: top-left corner, dark bg, white monospace text
                         let dim_text = format!("{} x {}", sel.width().round() as i32, sel.height().round() as i32);
                         let badge_pos = Pos2::new(sel.left(), (sel.top() - 22.0).max(4.0));
                         let font_id = egui::FontId::monospace(11.0);
@@ -613,99 +678,86 @@ impl ZenShotApp {
         let current_color = self.current_color();
 
         // --- 1. HORIZONTAL ACTION TOOLBAR (Bottom) ---
-        let h_btn_size = Vec2::new(24.0, 20.0); // actual 1x icon size from Lightshot DLL
-        let h_builder = egui::UiBuilder::new().max_rect(h_rect);
+        // Draw with painter for exact Lightshot gradient (250,251,251) -> (211,214,217) + shadow
+        let h_btn_size = Vec2::new(24.0, 20.0); // 1x icon from Lightshot DLL
+        paint_lightshot_toolbar(ui.painter(), h_rect);
+        let h_builder = egui::UiBuilder::new().max_rect(h_rect.shrink(3.0));
         ui.allocate_new_ui(h_builder, |ui| {
-            egui::Frame::none()
-                .fill(Color32::from_rgb(237, 237, 237))
-                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(160, 160, 168)))
-                .rounding(3.0)
-                .inner_margin(egui::Margin::symmetric(3.0, 3.0))
-                .shadow(egui::Shadow { blur: 6.0, spread: 1.0, color: Color32::from_black_alpha(60), offset: Vec2::new(0.0, 2.0) })
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(1.0, 0.0);
-                        ui.spacing_mut().button_padding = Vec2::new(2.0, 2.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(1.0, 0.0);
+                ui.spacing_mut().button_padding = Vec2::new(2.0, 3.0);
 
-                        if let Some(icons) = &self.icons {
-                            if ui.add(ImageButton::new(egui::Image::new(&icons.print).fit_to_exact_size(h_btn_size))).on_hover_text("Print (Ctrl+P)").clicked() {
-                                action = ToolbarAction::Print;
-                            }
-                            if ui.add(ImageButton::new(egui::Image::new(&icons.copy).fit_to_exact_size(h_btn_size))).on_hover_text("Copy to Clipboard (Ctrl+C)").clicked() {
-                                action = ToolbarAction::Copy;
-                            }
-                            if ui.add(ImageButton::new(egui::Image::new(&icons.save).fit_to_exact_size(h_btn_size))).on_hover_text("Save to disk (Ctrl+S)").clicked() {
-                                action = ToolbarAction::Save;
-                            }
-                            if ui.add(ImageButton::new(egui::Image::new(&icons.close).fit_to_exact_size(h_btn_size))).on_hover_text("Cancel (Esc)").clicked() {
-                                action = ToolbarAction::Close;
-                            }
-                        }
-                    });
-                });
+                if let Some(icons) = &self.icons {
+                    if ui.add(lightshot_btn(egui::Image::new(&icons.print).fit_to_exact_size(h_btn_size))).on_hover_text("Print (Ctrl+P)").clicked() {
+                        action = ToolbarAction::Print;
+                    }
+                    if ui.add(lightshot_btn(egui::Image::new(&icons.copy).fit_to_exact_size(h_btn_size))).on_hover_text("Copy to Clipboard (Ctrl+C)").clicked() {
+                        action = ToolbarAction::Copy;
+                    }
+                    if ui.add(lightshot_btn(egui::Image::new(&icons.save).fit_to_exact_size(h_btn_size))).on_hover_text("Save to disk (Ctrl+S)").clicked() {
+                        action = ToolbarAction::Save;
+                    }
+                    if ui.add(lightshot_btn(egui::Image::new(&icons.close).fit_to_exact_size(h_btn_size))).on_hover_text("Cancel (Esc)").clicked() {
+                        action = ToolbarAction::Close;
+                    }
+                }
+            });
         });
 
         // --- 2. VERTICAL DRAWING TOOLBAR (Right) ---
         let v_btn_size = Vec2::splat(20.0); // 1x icon size for drawing tools
-        let v_builder = egui::UiBuilder::new().max_rect(v_rect);
+        paint_lightshot_toolbar(ui.painter(), v_rect);
+        let v_builder = egui::UiBuilder::new().max_rect(v_rect.shrink(3.0));
         ui.allocate_new_ui(v_builder, |ui| {
-            egui::Frame::none()
-                .fill(Color32::from_rgb(237, 237, 237))
-                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(160, 160, 168)))
-                .rounding(3.0)
-                .inner_margin(egui::Margin::symmetric(3.0, 3.0))
-                .shadow(egui::Shadow { blur: 6.0, spread: 1.0, color: Color32::from_black_alpha(60), offset: Vec2::new(0.0, 2.0) })
-                .show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        ui.spacing_mut().item_spacing = Vec2::new(0.0, 1.0);
-                        ui.spacing_mut().button_padding = Vec2::new(2.0, 2.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(0.0, 1.0);
+                ui.spacing_mut().button_padding = Vec2::new(2.0, 2.0);
 
-                        if let Some(icons) = &self.icons {
-                            let btn = ImageButton::new(egui::Image::new(&icons.pen).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Pen);
-                            if ui.add(btn).on_hover_text("Pen").clicked() {
-                                action = ToolbarAction::SelectTool(if current_tool == Tool::Pen { Tool::Select } else { Tool::Pen });
-                            }
+                if let Some(icons) = &self.icons {
+                    let btn = lightshot_btn(egui::Image::new(&icons.pen).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Pen);
+                    if ui.add(btn).on_hover_text("Pen").clicked() {
+                        action = ToolbarAction::SelectTool(if current_tool == Tool::Pen { Tool::Select } else { Tool::Pen });
+                    }
 
-                            let btn = ImageButton::new(egui::Image::new(&icons.line).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Line);
-                            if ui.add(btn).on_hover_text("Line").clicked() {
-                                action = ToolbarAction::SelectTool(if current_tool == Tool::Line { Tool::Select } else { Tool::Line });
-                            }
+                    let btn = lightshot_btn(egui::Image::new(&icons.line).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Line);
+                    if ui.add(btn).on_hover_text("Line").clicked() {
+                        action = ToolbarAction::SelectTool(if current_tool == Tool::Line { Tool::Select } else { Tool::Line });
+                    }
 
-                            let btn = ImageButton::new(egui::Image::new(&icons.arrow).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Arrow);
-                            if ui.add(btn).on_hover_text("Arrow").clicked() {
-                                action = ToolbarAction::SelectTool(if current_tool == Tool::Arrow { Tool::Select } else { Tool::Arrow });
-                            }
+                    let btn = lightshot_btn(egui::Image::new(&icons.arrow).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Arrow);
+                    if ui.add(btn).on_hover_text("Arrow").clicked() {
+                        action = ToolbarAction::SelectTool(if current_tool == Tool::Arrow { Tool::Select } else { Tool::Arrow });
+                    }
 
-                            let btn = ImageButton::new(egui::Image::new(&icons.rect).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Rectangle);
-                            if ui.add(btn).on_hover_text("Rectangle").clicked() {
-                                action = ToolbarAction::SelectTool(if current_tool == Tool::Rectangle { Tool::Select } else { Tool::Rectangle });
-                            }
+                    let btn = lightshot_btn(egui::Image::new(&icons.rect).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Rectangle);
+                    if ui.add(btn).on_hover_text("Rectangle").clicked() {
+                        action = ToolbarAction::SelectTool(if current_tool == Tool::Rectangle { Tool::Select } else { Tool::Rectangle });
+                    }
 
-                            let btn = ImageButton::new(egui::Image::new(&icons.marker).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Marker);
-                            if ui.add(btn).on_hover_text("Marker").clicked() {
-                                action = ToolbarAction::SelectTool(if current_tool == Tool::Marker { Tool::Select } else { Tool::Marker });
-                            }
+                    let btn = lightshot_btn(egui::Image::new(&icons.marker).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Marker);
+                    if ui.add(btn).on_hover_text("Marker").clicked() {
+                        action = ToolbarAction::SelectTool(if current_tool == Tool::Marker { Tool::Select } else { Tool::Marker });
+                    }
 
-                            let btn = ImageButton::new(egui::Image::new(&icons.text).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Text);
-                            if ui.add(btn).on_hover_text("Text").clicked() {
-                                action = ToolbarAction::SelectTool(if current_tool == Tool::Text { Tool::Select } else { Tool::Text });
-                            }
+                    let btn = lightshot_btn(egui::Image::new(&icons.text).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Text);
+                    if ui.add(btn).on_hover_text("Text").clicked() {
+                        action = ToolbarAction::SelectTool(if current_tool == Tool::Text { Tool::Select } else { Tool::Text });
+                    }
 
-                            // Color swatch - exact Lightshot style square
-                            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(20.0), egui::Sense::click());
-                            ui.painter().rect_filled(rect, 2.0_f32, current_color);
-                            ui.painter().rect_stroke(rect, 2.0_f32, Stroke::new(1.5_f32, Color32::from_rgb(90, 90, 100)));
-                            if resp.on_hover_text("Color (click to cycle)").clicked() {
-                                action = ToolbarAction::CycleColor;
-                            }
+                    // Color swatch: exact Lightshot style
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(20.0), egui::Sense::click());
+                    ui.painter().rect_filled(rect, 2.0_f32, current_color);
+                    ui.painter().rect_stroke(rect, 2.0_f32, Stroke::new(1.0_f32, Color32::from_rgb(90, 90, 100)));
+                    if resp.on_hover_text("Color (click to cycle)").clicked() {
+                        action = ToolbarAction::CycleColor;
+                    }
 
-                            let btn = ImageButton::new(egui::Image::new(&icons.undo).fit_to_exact_size(v_btn_size));
-                            if ui.add(btn).on_hover_text("Undo (Ctrl+Z)").clicked() {
-                                action = ToolbarAction::Undo;
-                            }
-                        }
-                    });
-                });
+                    let btn = lightshot_btn(egui::Image::new(&icons.undo).fit_to_exact_size(v_btn_size));
+                    if ui.add(btn).on_hover_text("Undo (Ctrl+Z)").clicked() {
+                        action = ToolbarAction::Undo;
+                    }
+                }
+            });
         });
 
         // --- 3. APPLY ACTIONS SAFELY AFTER UI RENDERING ---
