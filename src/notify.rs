@@ -39,7 +39,9 @@ fn tell(body: &str) {
 fn windows_tell(body: &str) {
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, SendMessageW};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, SendMessageTimeoutW, SMTO_ABORTIFHUNG,
+    };
 
     unsafe {
         let class = wide(DAEMON_CLASS);
@@ -53,7 +55,17 @@ fn windows_tell(body: &str) {
             cbData: (payload.len() * 2) as u32,
             lpData: payload.as_mut_ptr().cast(),
         };
-        SendMessageW(hwnd, WM_COPYDATA, 0, &cds as *const COPYDATASTRUCT as isize);
+        // A plain SendMessage would block the overlay forever if the tray is
+        // busy, and the capture mutex it holds would kill the next screenshot.
+        SendMessageTimeoutW(
+            hwnd,
+            WM_COPYDATA,
+            0,
+            &cds as *const COPYDATASTRUCT as isize,
+            SMTO_ABORTIFHUNG,
+            600,
+            std::ptr::null_mut(),
+        );
     }
 }
 

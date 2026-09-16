@@ -252,6 +252,14 @@ impl ZenShotApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
+    /// A hidden window stops pumping events, so a queued `Close` may never be
+    /// applied — and the surviving process keeps the single-instance mutex,
+    /// which silently swallows the next screenshot. Leave for good instead.
+    fn quit(&mut self, ctx: &egui::Context) -> ! {
+        self.vanish(ctx);
+        std::process::exit(0)
+    }
+
     /// Active drawing color from palette.
     pub fn current_color(&self) -> Color32 {
         PALETTE[self.color_index % PALETTE.len()]
@@ -294,10 +302,10 @@ impl ZenShotApp {
                 if self.config.show_notifications {
                     crate::notify::saved(&path);
                 }
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             Err(err) => eprintln!("Save failed: {err}"),
         }
+        self.quit(ctx);
     }
 
     /// Copies cropped image directly to clipboard in RAM and exits immediately.
@@ -310,14 +318,15 @@ impl ZenShotApp {
             return;
         };
         self.remember_selection();
-        if let Err(err) = copy_to_clipboard(&img) {
-            eprintln!("{err}");
-            return;
+        match copy_to_clipboard(&img) {
+            Ok(()) => {
+                if self.config.show_notifications {
+                    crate::notify::copied();
+                }
+            }
+            Err(err) => eprintln!("{err}"),
         }
-        if self.config.show_notifications {
-            crate::notify::copied();
-        }
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        self.quit(ctx);
     }
 
     /// Hands the cropped image to the system printer and exits.
@@ -335,7 +344,7 @@ impl ZenShotApp {
         if img.save(&path).is_ok() {
             let _ = spawn_print_job(&path);
         }
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        self.quit(ctx);
     }
 
     /// Checks if mouse point hits any of the 8 selection handles.
@@ -535,9 +544,7 @@ impl eframe::App for ZenShotApp {
             };
 
             if ctx.input(|i| i.key_pressed(Key::Escape)) || hit(Key::X) {
-                self.vanish(ctx);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                return;
+                self.quit(ctx);
             }
             if hit(Key::A) {
                 self.selection = Some(screen_rect);
@@ -906,6 +913,25 @@ impl eframe::App for ZenShotApp {
                     }
                 }
             });
+
+        // The GDI freeze-frame stays up until the GL overlay has actually
+        // presented, so the hand-off has no uncovered frame in between.
+        #[cfg(windows)]
+        if self.cover.is_some() {
+            self.revealed_frames = self.revealed_frames.saturating_add(1);
+            ctx.request_repaint();
+            if self.revealed_frames >= 2 {
+                self.cover = None;
+            }
+        }
+    }
+
+    /// eframe's default clear is near-black, which shows as a dark flash in any
+    /// frame the desktop image has not covered yet (first paint, resize, DPI
+    /// change). Clearing to the dim the overlay itself paints makes those
+    /// frames indistinguishable from the finished overlay.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.36, 0.36, 0.36, 1.0]
     }
 }
 
@@ -1014,10 +1040,7 @@ impl ZenShotApp {
             ToolbarAction::None => {}
             ToolbarAction::Copy => self.action_copy(ctx, screen_rect),
             ToolbarAction::Save => self.action_save(ctx, screen_rect),
-            ToolbarAction::Close => {
-                self.vanish(ctx);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+            ToolbarAction::Close => self.quit(ctx),
             ToolbarAction::Print => self.action_print(ctx, screen_rect),
             ToolbarAction::SelectTool(tool) => {
                 self.current_tool = tool;
@@ -1027,17 +1050,6 @@ impl ZenShotApp {
             }
             ToolbarAction::Undo => {
                 self.annotations.pop();
-            }
-        }
-
-        #[cfg(windows)]
-        {
-            if self.cover.is_some() {
-                self.revealed_frames = self.revealed_frames.saturating_add(1);
-                ctx.request_repaint();
-                if self.revealed_frames >= 2 {
-                    self.cover = None;
-                }
             }
         }
     }

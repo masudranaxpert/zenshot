@@ -79,6 +79,19 @@ fn load_texture(ctx: &egui::Context, name: &str, png_bytes: &[u8]) -> TextureHan
     load_texture_named(ctx, &format!("icon_{name}"), png_bytes)
 }
 
+/// Title-bar / taskbar icon. Without it every eframe window shows the
+/// framework's own "e" placeholder instead of ZenShot's feather.
+pub fn window_icon() -> egui::IconData {
+    let img = image::load_from_memory(include_bytes!("../assets/zenshot.png"))
+        .expect("embedded window icon failed to load")
+        .to_rgba8();
+    egui::IconData {
+        width: img.width(),
+        height: img.height(),
+        rgba: img.into_raw(),
+    }
+}
+
 fn load_texture_named(ctx: &egui::Context, id: &str, png_bytes: &[u8]) -> TextureHandle {
     let img = image::load_from_memory(png_bytes)
         .unwrap_or_else(|e| panic!("Embedded toolbar icon {id} failed to load: {e}"))

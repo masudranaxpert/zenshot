@@ -60,7 +60,9 @@ pub fn run() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
         persist_window: false,
         viewport: ViewportBuilder::default()
-            .with_title("Options")
+            .with_title("ZenShot Options")
+            .with_app_id("zenshot")
+            .with_icon(crate::icons::window_icon())
             .with_inner_size([560.0, 440.0])
             .with_min_inner_size([520.0, 400.0])
             .with_resizable(true),
