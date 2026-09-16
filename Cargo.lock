@@ -4142,6 +4142,7 @@ dependencies = [
  "image",
  "serde",
  "toml 0.8.23",
+ "webbrowser",
  "windows-sys 0.59.0",
  "xcap",
 ]

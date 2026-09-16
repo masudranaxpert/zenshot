@@ -1,7 +1,10 @@
 use crate::clipboard::copy_to_clipboard;
 use crate::config::Config;
+use crate::icons::ToolbarIcons;
 use chrono::Local;
-use eframe::egui::{self, Color32, CursorIcon, Key, Pos2, Rect, Stroke, Vec2};
+use eframe::egui::{
+    self, Color32, CursorIcon, ImageButton, Key, Pos2, Rect, Stroke, Vec2,
+};
 use image::{Rgba, RgbaImage};
 use std::fs;
 
@@ -32,10 +35,27 @@ pub enum Annotation {
         color: Color32,
         thickness: f32,
     },
+    Line {
+        start: Pos2,
+        end: Pos2,
+        color: Color32,
+        thickness: f32,
+    },
     Pen {
         points: Vec<Pos2>,
         color: Color32,
         thickness: f32,
+    },
+    Marker {
+        points: Vec<Pos2>,
+        color: Color32,
+        thickness: f32,
+    },
+    Text {
+        pos: Pos2,
+        text: String,
+        color: Color32,
+        size: f32,
     },
 }
 
@@ -43,21 +63,25 @@ pub enum Annotation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     Select,
-    Rectangle,
-    Arrow,
     Pen,
+    Line,
+    Arrow,
+    Rectangle,
+    Marker,
+    Text,
 }
 
 /// Preset color palette.
-pub const PRESET_COLORS: [Color32; 5] = [
+pub const PALETTE: [Color32; 6] = [
     Color32::from_rgb(239, 68, 68),  // Red
     Color32::from_rgb(59, 130, 246), // Blue
     Color32::from_rgb(16, 185, 129), // Green
     Color32::from_rgb(245, 158, 11), // Yellow
     Color32::from_rgb(168, 85, 247), // Purple
+    Color32::from_rgb(255, 255, 255), // White
 ];
 
-/// Current drag interaction state.
+/// Dragging interaction state.
 #[derive(Debug, Clone)]
 enum DragState {
     None,
@@ -66,7 +90,8 @@ enum DragState {
     ResizingSelection { handle: Handle, orig_rect: Rect },
     DrawingRect(Pos2),
     DrawingArrow(Pos2),
-    DrawingPen(Vec<Pos2>),
+    DrawingLine(Pos2),
+    DrawingPath(Vec<Pos2>),
 }
 
 /// Main application state for ZenShot.
@@ -74,33 +99,41 @@ pub struct ZenShotApp {
     config: Config,
     screen_image: RgbaImage,
     texture: Option<egui::TextureHandle>,
+    icons: Option<ToolbarIcons>,
     selection: Option<Rect>,
     drag_state: DragState,
     current_tool: Tool,
-    active_color: Color32,
+    color_index: usize,
     annotations: Vec<Annotation>,
-    current_mouse: Option<Pos2>,
+    text_input: String,
+    active_text_pos: Option<Pos2>,
 }
 
 impl ZenShotApp {
     pub fn new(config: Config, screen_image: RgbaImage) -> Self {
-        let active_color = Color32::from_rgb(
-            config.stroke_color[0],
-            config.stroke_color[1],
-            config.stroke_color[2],
-        );
-
         Self {
             config,
             screen_image,
             texture: None,
+            icons: None,
             selection: None,
             drag_state: DragState::None,
             current_tool: Tool::Select,
-            active_color,
+            color_index: 0,
             annotations: Vec::new(),
-            current_mouse: None,
+            text_input: String::new(),
+            active_text_pos: None,
         }
+    }
+
+    /// Active drawing color from palette.
+    pub fn current_color(&self) -> Color32 {
+        PALETTE[self.color_index % PALETTE.len()]
+    }
+
+    /// Cycle to next color in palette.
+    pub fn cycle_color(&mut self) {
+        self.color_index = (self.color_index + 1) % PALETTE.len();
     }
 
     /// Performs in-memory crop with burned annotations.
@@ -131,7 +164,7 @@ impl ZenShotApp {
 
     /// Checks if mouse point hits any of the 8 selection handles.
     fn hit_test_handles(&self, sel: Rect, point: Pos2) -> Option<Handle> {
-        const HANDLE_RADIUS: f32 = 9.0;
+        const HANDLE_RADIUS: f32 = 8.0;
         let handles = [
             (Handle::TopLeft, sel.left_top()),
             (Handle::Top, Pos2::new(sel.center().x, sel.top())),
@@ -150,21 +183,63 @@ impl ZenShotApp {
         }
         None
     }
+
+    /// Calculates exact screen bounds of the Horizontal and Vertical toolbars.
+    fn get_toolbar_rects(&self, sel: Rect, screen_rect: Rect) -> (Rect, Rect) {
+        let btn_size = 28.0;
+
+        // Horizontal toolbar: 4 core actions (Print, Copy, Save, Close) - 100% local, zero upload
+        let h_width = 4.0 * btn_size + 8.0;
+        let h_height = btn_size + 6.0;
+
+        let mut h_x = sel.right() - h_width;
+        if h_x < screen_rect.left() + 4.0 {
+            h_x = screen_rect.left() + 4.0;
+        }
+
+        let mut h_y = sel.bottom() + 6.0;
+        if h_y + h_height > screen_rect.bottom() - 4.0 {
+            h_y = sel.bottom() - h_height - 6.0;
+        }
+
+        let h_rect = Rect::from_min_size(Pos2::new(h_x, h_y), Vec2::new(h_width, h_height));
+
+        // Vertical toolbar: 8 buttons (Pen, Line, Arrow, Rect, Marker, Text, Color, Undo)
+        let v_width = btn_size + 6.0;
+        let v_height = 8.0 * btn_size + 8.0;
+
+        let mut v_x = sel.right() + 6.0;
+        if v_x + v_width > screen_rect.right() - 4.0 {
+            v_x = sel.right() - v_width - 6.0;
+        }
+
+        let mut v_y = sel.bottom() - v_height;
+        if v_y < screen_rect.top() + 4.0 {
+            v_y = screen_rect.top() + 4.0;
+        }
+
+        let v_rect = Rect::from_min_size(Pos2::new(v_x, v_y), Vec2::new(v_width, v_height));
+
+        (h_rect, v_rect)
+    }
 }
 
 impl eframe::App for ZenShotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Load captured screen into GPU texture on first frame
+        // 1. Initialize desktop texture and icons once
         if self.texture.is_none() {
-            let size = [self.screen_image.width() as _, self.screen_image.height() as _];
+            let size = [self.screen_image.width() as usize, self.screen_image.height() as usize];
             let pixels = self.screen_image.as_flat_samples();
             let color_image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
             self.texture = Some(ctx.load_texture("desktop", color_image, egui::TextureOptions::LINEAR));
         }
+        if self.icons.is_none() {
+            self.icons = Some(ToolbarIcons::load(ctx));
+        }
 
         let screen_rect = ctx.screen_rect();
 
-        // Keyboard shortcuts
+        // 2. Global Hotkeys
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
@@ -180,201 +255,238 @@ impl eframe::App for ZenShotApp {
         if ctx.input(|i| (i.modifiers.command || i.modifiers.ctrl) && i.key_pressed(Key::Z)) {
             self.annotations.pop();
         }
-        if ctx.input(|i| i.key_pressed(Key::R)) {
-            self.current_tool = if self.current_tool == Tool::Rectangle { Tool::Select } else { Tool::Rectangle };
-        }
-        if ctx.input(|i| i.key_pressed(Key::A)) {
-            self.current_tool = if self.current_tool == Tool::Arrow { Tool::Select } else { Tool::Arrow };
-        }
-        if ctx.input(|i| i.key_pressed(Key::P)) {
-            self.current_tool = if self.current_tool == Tool::Pen { Tool::Select } else { Tool::Pen };
-        }
 
-        // Pointer state
+        // 3. Pointer and toolbar hover detection (CRITICAL: prevents toolbar clicks from resetting selection)
         let pointer = ctx.input(|i| i.pointer.clone());
         let current_pos = pointer.hover_pos().unwrap_or(Pos2::ZERO);
-        self.current_mouse = Some(current_pos);
+
+        let mut mouse_on_toolbar = false;
+        if let Some(sel) = self.selection {
+            let (h_bar, v_bar) = self.get_toolbar_rects(sel, screen_rect);
+            if h_bar.contains(current_pos) || v_bar.contains(current_pos) {
+                mouse_on_toolbar = true;
+            }
+        }
 
         let mut desired_cursor = CursorIcon::Crosshair;
+        let active_color = self.current_color();
 
-        // Interaction state machine
-        match &mut self.drag_state {
-            DragState::None => {
-                if let Some(sel) = self.selection {
-                    if let Some(handle) = self.hit_test_handles(sel, current_pos) {
-                        desired_cursor = match handle {
-                            Handle::TopLeft | Handle::BottomRight => CursorIcon::ResizeNwSe,
-                            Handle::TopRight | Handle::BottomLeft => CursorIcon::ResizeNeSw,
-                            Handle::Top | Handle::Bottom => CursorIcon::ResizeVertical,
-                            Handle::Left | Handle::Right => CursorIcon::ResizeHorizontal,
-                        };
-
-                        if pointer.primary_pressed() {
-                            self.drag_state = DragState::ResizingSelection {
-                                handle,
-                                orig_rect: sel,
+        // 4. Mouse Drag State Machine (ONLY processes if mouse is NOT over toolbar)
+        if !mouse_on_toolbar {
+            match &mut self.drag_state {
+                DragState::None => {
+                    if let Some(sel) = self.selection {
+                        if let Some(handle) = self.hit_test_handles(sel, current_pos) {
+                            desired_cursor = match handle {
+                                Handle::TopLeft | Handle::BottomRight => CursorIcon::ResizeNwSe,
+                                Handle::TopRight | Handle::BottomLeft => CursorIcon::ResizeNeSw,
+                                Handle::Top | Handle::Bottom => CursorIcon::ResizeVertical,
+                                Handle::Left | Handle::Right => CursorIcon::ResizeHorizontal,
                             };
-                        }
-                    } else if sel.contains(current_pos) {
-                        match self.current_tool {
-                            Tool::Select => {
-                                desired_cursor = CursorIcon::Move;
-                                if pointer.primary_pressed() {
-                                    self.drag_state = DragState::MovingSelection {
-                                        start_mouse: current_pos,
-                                        orig_rect: sel,
-                                    };
+
+                            if pointer.primary_pressed() {
+                                self.drag_state = DragState::ResizingSelection { handle, orig_rect: sel };
+                            }
+                        } else if sel.contains(current_pos) {
+                            match self.current_tool {
+                                Tool::Select => {
+                                    desired_cursor = CursorIcon::Move;
+                                    if pointer.primary_pressed() {
+                                        self.drag_state = DragState::MovingSelection { start_mouse: current_pos, orig_rect: sel };
+                                    }
+                                }
+                                Tool::Pen => {
+                                    desired_cursor = CursorIcon::Crosshair;
+                                    if pointer.primary_pressed() {
+                                        self.drag_state = DragState::DrawingPath(vec![current_pos]);
+                                    }
+                                }
+                                Tool::Line => {
+                                    desired_cursor = CursorIcon::Crosshair;
+                                    if pointer.primary_pressed() {
+                                        self.drag_state = DragState::DrawingLine(current_pos);
+                                    }
+                                }
+                                Tool::Arrow => {
+                                    desired_cursor = CursorIcon::Crosshair;
+                                    if pointer.primary_pressed() {
+                                        self.drag_state = DragState::DrawingArrow(current_pos);
+                                    }
+                                }
+                                Tool::Rectangle => {
+                                    desired_cursor = CursorIcon::Crosshair;
+                                    if pointer.primary_pressed() {
+                                        self.drag_state = DragState::DrawingRect(current_pos);
+                                    }
+                                }
+                                Tool::Marker => {
+                                    desired_cursor = CursorIcon::Crosshair;
+                                    if pointer.primary_pressed() {
+                                        self.drag_state = DragState::DrawingPath(vec![current_pos]);
+                                    }
+                                }
+                                Tool::Text => {
+                                    desired_cursor = CursorIcon::Text;
+                                    if pointer.primary_pressed() {
+                                        self.active_text_pos = Some(current_pos);
+                                        self.text_input.clear();
+                                    }
                                 }
                             }
-                            Tool::Rectangle => {
-                                desired_cursor = CursorIcon::Crosshair;
-                                if pointer.primary_pressed() {
-                                    self.drag_state = DragState::DrawingRect(current_pos);
-                                }
-                            }
-                            Tool::Arrow => {
-                                desired_cursor = CursorIcon::Crosshair;
-                                if pointer.primary_pressed() {
-                                    self.drag_state = DragState::DrawingArrow(current_pos);
-                                }
-                            }
-                            Tool::Pen => {
-                                desired_cursor = CursorIcon::Crosshair;
-                                if pointer.primary_pressed() {
-                                    self.drag_state = DragState::DrawingPen(vec![current_pos]);
-                                }
-                            }
+                        } else if pointer.primary_pressed() {
+                            self.selection = None;
+                            self.annotations.clear();
+                            self.drag_state = DragState::CreatingSelection(current_pos);
                         }
                     } else if pointer.primary_pressed() {
-                        self.selection = None;
-                        self.annotations.clear();
                         self.drag_state = DragState::CreatingSelection(current_pos);
                     }
-                } else if pointer.primary_pressed() {
-                    self.drag_state = DragState::CreatingSelection(current_pos);
                 }
-            }
-            DragState::CreatingSelection(start) => {
-                desired_cursor = CursorIcon::Crosshair;
-                self.selection = Some(Rect::from_two_pos(*start, current_pos));
+                DragState::CreatingSelection(start) => {
+                    desired_cursor = CursorIcon::Crosshair;
+                    self.selection = Some(Rect::from_two_pos(*start, current_pos));
 
-                if pointer.primary_released() {
-                    if let Some(sel) = self.selection {
-                        let normalized = normalize_rect(sel);
-                        if normalized.width() > 6.0 && normalized.height() > 6.0 {
-                            self.selection = Some(normalized);
-                        } else {
-                            self.selection = None;
+                    if pointer.primary_released() {
+                        if let Some(sel) = self.selection {
+                            let normalized = normalize_rect(sel);
+                            if normalized.width() > 6.0 && normalized.height() > 6.0 {
+                                self.selection = Some(normalized);
+                            } else {
+                                self.selection = None;
+                            }
+                        }
+                        self.drag_state = DragState::None;
+                    }
+                }
+                DragState::MovingSelection { start_mouse, orig_rect } => {
+                    desired_cursor = CursorIcon::Move;
+                    let delta = current_pos - *start_mouse;
+                    let mut new_rect = orig_rect.translate(delta);
+
+                    let clamped_x = new_rect.min.x.clamp(screen_rect.min.x, screen_rect.max.x - new_rect.width());
+                    let clamped_y = new_rect.min.y.clamp(screen_rect.min.y, screen_rect.max.y - new_rect.height());
+                    new_rect = Rect::from_min_size(Pos2::new(clamped_x, clamped_y), new_rect.size());
+
+                    self.selection = Some(new_rect);
+
+                    if pointer.primary_released() {
+                        self.drag_state = DragState::None;
+                    }
+                }
+                DragState::ResizingSelection { handle, orig_rect } => {
+                    let mut min = orig_rect.min;
+                    let mut max = orig_rect.max;
+
+                    match handle {
+                        Handle::TopLeft => { min.x = current_pos.x; min.y = current_pos.y; }
+                        Handle::Top => { min.y = current_pos.y; }
+                        Handle::TopRight => { max.x = current_pos.x; min.y = current_pos.y; }
+                        Handle::Right => { max.x = current_pos.x; }
+                        Handle::BottomRight => { max.x = current_pos.x; max.y = current_pos.y; }
+                        Handle::Bottom => { max.y = current_pos.y; }
+                        Handle::BottomLeft => { min.x = current_pos.x; max.y = current_pos.y; }
+                        Handle::Left => { min.x = current_pos.x; }
+                    }
+
+                    self.selection = Some(Rect::from_two_pos(min, max));
+
+                    if pointer.primary_released() {
+                        if let Some(s) = self.selection {
+                            self.selection = Some(normalize_rect(s));
+                        }
+                        self.drag_state = DragState::None;
+                    }
+                }
+                DragState::DrawingRect(start) => {
+                    desired_cursor = CursorIcon::Crosshair;
+                    if pointer.primary_released() {
+                        let box_rect = normalize_rect(Rect::from_two_pos(*start, current_pos));
+                        if box_rect.width() > 3.0 && box_rect.height() > 3.0 {
+                            self.annotations.push(Annotation::Rectangle {
+                                rect: box_rect,
+                                color: active_color,
+                                thickness: self.config.stroke_thickness,
+                            });
+                        }
+                        self.drag_state = DragState::None;
+                    }
+                }
+                DragState::DrawingArrow(start) => {
+                    desired_cursor = CursorIcon::Crosshair;
+                    if pointer.primary_released() {
+                        if (current_pos - *start).length() > 6.0 {
+                            self.annotations.push(Annotation::Arrow {
+                                start: *start,
+                                end: current_pos,
+                                color: active_color,
+                                thickness: self.config.stroke_thickness,
+                            });
+                        }
+                        self.drag_state = DragState::None;
+                    }
+                }
+                DragState::DrawingLine(start) => {
+                    desired_cursor = CursorIcon::Crosshair;
+                    if pointer.primary_released() {
+                        if (current_pos - *start).length() > 3.0 {
+                            self.annotations.push(Annotation::Line {
+                                start: *start,
+                                end: current_pos,
+                                color: active_color,
+                                thickness: self.config.stroke_thickness,
+                            });
+                        }
+                        self.drag_state = DragState::None;
+                    }
+                }
+                DragState::DrawingPath(points) => {
+                    desired_cursor = CursorIcon::Crosshair;
+                    if let Some(last) = points.last() {
+                        if (current_pos - *last).length() >= 2.0 {
+                            points.push(current_pos);
                         }
                     }
-                    self.drag_state = DragState::None;
-                }
-            }
-            DragState::MovingSelection { start_mouse, orig_rect } => {
-                desired_cursor = CursorIcon::Move;
-                let delta = current_pos - *start_mouse;
-                let mut new_rect = orig_rect.translate(delta);
-
-                let clamped_x = new_rect.min.x.clamp(screen_rect.min.x, screen_rect.max.x - new_rect.width());
-                let clamped_y = new_rect.min.y.clamp(screen_rect.min.y, screen_rect.max.y - new_rect.height());
-                new_rect = Rect::from_min_size(Pos2::new(clamped_x, clamped_y), new_rect.size());
-
-                self.selection = Some(new_rect);
-
-                if pointer.primary_released() {
-                    self.drag_state = DragState::None;
-                }
-            }
-            DragState::ResizingSelection { handle, orig_rect } => {
-                let mut min = orig_rect.min;
-                let mut max = orig_rect.max;
-
-                match handle {
-                    Handle::TopLeft => { min.x = current_pos.x; min.y = current_pos.y; }
-                    Handle::Top => { min.y = current_pos.y; }
-                    Handle::TopRight => { max.x = current_pos.x; min.y = current_pos.y; }
-                    Handle::Right => { max.x = current_pos.x; }
-                    Handle::BottomRight => { max.x = current_pos.x; max.y = current_pos.y; }
-                    Handle::Bottom => { max.y = current_pos.y; }
-                    Handle::BottomLeft => { min.x = current_pos.x; max.y = current_pos.y; }
-                    Handle::Left => { min.x = current_pos.x; }
-                }
-
-                self.selection = Some(Rect::from_two_pos(min, max));
-
-                if pointer.primary_released() {
-                    if let Some(s) = self.selection {
-                        self.selection = Some(normalize_rect(s));
+                    if pointer.primary_released() {
+                        if points.len() >= 2 {
+                            if self.current_tool == Tool::Marker {
+                                let marker_color = Color32::from_rgba_unmultiplied(active_color.r(), active_color.g(), active_color.b(), 90);
+                                self.annotations.push(Annotation::Marker {
+                                    points: points.clone(),
+                                    color: marker_color,
+                                    thickness: self.config.stroke_thickness * 3.5,
+                                });
+                            } else {
+                                self.annotations.push(Annotation::Pen {
+                                    points: points.clone(),
+                                    color: active_color,
+                                    thickness: self.config.stroke_thickness,
+                                });
+                            }
+                        }
+                        self.drag_state = DragState::None;
                     }
-                    self.drag_state = DragState::None;
-                }
-            }
-            DragState::DrawingRect(start) => {
-                desired_cursor = CursorIcon::Crosshair;
-                if pointer.primary_released() {
-                    let box_rect = normalize_rect(Rect::from_two_pos(*start, current_pos));
-                    if box_rect.width() > 3.0 && box_rect.height() > 3.0 {
-                        self.annotations.push(Annotation::Rectangle {
-                            rect: box_rect,
-                            color: self.active_color,
-                            thickness: self.config.stroke_thickness,
-                        });
-                    }
-                    self.drag_state = DragState::None;
-                }
-            }
-            DragState::DrawingArrow(start) => {
-                desired_cursor = CursorIcon::Crosshair;
-                if pointer.primary_released() {
-                    if (current_pos - *start).length() > 6.0 {
-                        self.annotations.push(Annotation::Arrow {
-                            start: *start,
-                            end: current_pos,
-                            color: self.active_color,
-                            thickness: self.config.stroke_thickness,
-                        });
-                    }
-                    self.drag_state = DragState::None;
-                }
-            }
-            DragState::DrawingPen(points) => {
-                desired_cursor = CursorIcon::Crosshair;
-                if let Some(last) = points.last() {
-                    if (current_pos - *last).length() >= 2.0 {
-                        points.push(current_pos);
-                    }
-                }
-                if pointer.primary_released() {
-                    if points.len() >= 2 {
-                        self.annotations.push(Annotation::Pen {
-                            points: points.clone(),
-                            color: self.active_color,
-                            thickness: self.config.stroke_thickness,
-                        });
-                    }
-                    self.drag_state = DragState::None;
                 }
             }
         }
 
         ctx.set_cursor_icon(desired_cursor);
 
-        // Rendering panel
+        // 5. Render Central Canvas
         egui::CentralPanel::default()
             .frame(egui::Frame::none())
             .show(ctx, |ui| {
                 let painter = ui.painter();
 
                 if let Some(tex) = &self.texture {
-                    // Step 1: Dimmed backdrop of the whole desktop
+                    // Darkened desktop background
                     painter.image(
                         tex.id(),
                         screen_rect,
                         Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        Color32::from_rgba_unmultiplied(90, 90, 95, 255),
+                        Color32::from_rgba_unmultiplied(80, 80, 85, 255),
                     );
 
-                    // Step 2: Clear, un-dimmed view inside the selection
+                    // Un-dimmed crystal-clear selection window
                     if let Some(sel) = self.selection {
                         let uv_min = Pos2::new(
                             (sel.min.x - screen_rect.min.x) / screen_rect.width(),
@@ -387,10 +499,10 @@ impl eframe::App for ZenShotApp {
 
                         painter.image(tex.id(), sel, Rect::from_min_max(uv_min, uv_max), Color32::WHITE);
 
-                        // Crisp selection outline
-                        painter.rect_stroke(sel, 0.0_f32, Stroke::new(1.5_f32, Color32::from_rgb(56, 189, 248)));
+                        // Selection border: 1.5px light blue
+                        painter.rect_stroke(sel, 0.0_f32, Stroke::new(1.5_f32, Color32::from_rgb(0, 174, 239)));
 
-                        // 8 Handles: circular with subtle shadow
+                        // 8 Sizing Handles
                         let handle_positions = [
                             sel.left_top(),
                             Pos2::new(sel.center().x, sel.top()),
@@ -402,48 +514,76 @@ impl eframe::App for ZenShotApp {
                             Pos2::new(sel.left(), sel.center().y),
                         ];
                         for pos in handle_positions {
-                            painter.circle_filled(pos, 5.0_f32, Color32::WHITE);
-                            painter.circle_stroke(pos, 5.0_f32, Stroke::new(1.5_f32, Color32::from_rgb(2, 132, 199)));
+                            let handle_rect = Rect::from_center_size(pos, Vec2::splat(6.0));
+                            painter.rect_filled(handle_rect, 0.0_f32, Color32::WHITE);
+                            painter.rect_stroke(handle_rect, 0.0_f32, Stroke::new(1.0_f32, Color32::from_rgb(0, 120, 215)));
                         }
 
-                        // Dimension Pill Badge: W × H px
-                        let dim_text = format!("{} × {} px", sel.width().round() as i32, sel.height().round() as i32);
-                        let badge_pos = Pos2::new(sel.left(), (sel.top() - 26.0).max(6.0));
-                        let font_id = egui::FontId::monospace(12.0);
-                        let galley = painter.layout_no_wrap(dim_text, font_id, Color32::from_rgb(241, 245, 249));
-                        let badge_rect = Rect::from_min_size(badge_pos, galley.size() + Vec2::new(14.0, 6.0));
-                        painter.rect_filled(badge_rect, 4.0_f32, Color32::from_black_alpha(220));
-                        painter.rect_stroke(badge_rect, 4.0_f32, Stroke::new(1.0_f32, Color32::from_rgb(51, 65, 85)));
-                        painter.galley(badge_pos + Vec2::new(7.0, 3.0), galley, Color32::WHITE);
+                        // Dimension Badge: W x H
+                        let dim_text = format!("{} x {}", sel.width().round() as i32, sel.height().round() as i32);
+                        let badge_pos = Pos2::new(sel.left(), (sel.top() - 22.0).max(4.0));
+                        let font_id = egui::FontId::monospace(11.0);
+                        let galley = painter.layout_no_wrap(dim_text, font_id, Color32::WHITE);
+                        let badge_rect = Rect::from_min_size(badge_pos, galley.size() + Vec2::new(8.0, 4.0));
+                        painter.rect_filled(badge_rect, 2.0_f32, Color32::from_black_alpha(220));
+                        painter.galley(badge_pos + Vec2::new(4.0, 2.0), galley, Color32::WHITE);
                     }
                 }
 
-                // Step 3: Draw existing annotations
+                // Render all drawn annotations
                 for ann in &self.annotations {
                     draw_annotation(painter, ann);
                 }
 
-                // Step 4: Draw active drawing previews
+                // Render live drawing preview
                 match &self.drag_state {
                     DragState::DrawingRect(start) => {
                         let preview = normalize_rect(Rect::from_two_pos(*start, current_pos));
-                        painter.rect_stroke(preview, 0.0_f32, Stroke::new(self.config.stroke_thickness, self.active_color));
+                        painter.rect_stroke(preview, 0.0_f32, Stroke::new(self.config.stroke_thickness, self.current_color()));
                     }
                     DragState::DrawingArrow(start) => {
-                        draw_arrow(painter, *start, current_pos, self.active_color, self.config.stroke_thickness);
+                        draw_arrow(painter, *start, current_pos, self.current_color(), self.config.stroke_thickness);
                     }
-                    DragState::DrawingPen(points) => {
+                    DragState::DrawingLine(start) => {
+                        painter.line_segment([*start, current_pos], Stroke::new(self.config.stroke_thickness, self.current_color()));
+                    }
+                    DragState::DrawingPath(points) => {
                         for window in points.windows(2) {
-                            painter.line_segment([window[0], window[1]], Stroke::new(self.config.stroke_thickness, self.active_color));
+                            painter.line_segment([window[0], window[1]], Stroke::new(self.config.stroke_thickness, self.current_color()));
                         }
                     }
                     _ => {}
                 }
 
-                // Step 5: Floating Designer Toolbar
+                // Active inline text box
+                if let Some(pos) = self.active_text_pos {
+                    let mut text_active = true;
+                    let text_rect = Rect::from_min_size(pos, Vec2::new(200.0, 26.0));
+                    let builder = egui::UiBuilder::new().max_rect(text_rect);
+                    ui.allocate_new_ui(builder, |ui| {
+                        let res = ui.text_edit_singleline(&mut self.text_input);
+                        res.request_focus();
+                        if ui.input(|i| i.key_pressed(Key::Enter)) {
+                            if !self.text_input.trim().is_empty() {
+                                self.annotations.push(Annotation::Text {
+                                    pos,
+                                    text: self.text_input.clone(),
+                                    color: self.current_color(),
+                                    size: 16.0,
+                                });
+                            }
+                            text_active = false;
+                        }
+                    });
+                    if !text_active {
+                        self.active_text_pos = None;
+                    }
+                }
+
+                // Render Lightshot Dual Toolbars when selection is active
                 if let Some(sel) = self.selection {
                     if matches!(self.drag_state, DragState::None) {
-                        self.render_toolbar(ui, ctx, sel, screen_rect);
+                        self.render_lightshot_toolbars(ui, ctx, sel, screen_rect);
                     }
                 }
             });
@@ -451,109 +591,143 @@ impl eframe::App for ZenShotApp {
 }
 
 impl ZenShotApp {
-    /// Renders floating toolbar anchored to the selection rectangle.
-    fn render_toolbar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, sel: Rect, screen_rect: Rect) {
-        let bar_width = 460.0;
-        let bar_height = 42.0;
-
-        // Smart placement: below selection, or flips above/inside if close to screen border
-        let mut x = sel.right() - bar_width;
-        if x < screen_rect.left() + 10.0 {
-            x = screen_rect.left() + 10.0;
+    /// Renders Lightshot's iconic Dual Floating Toolbars (Horizontal & Vertical) with extracted icons.
+    fn render_lightshot_toolbars(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, sel: Rect, screen_rect: Rect) {
+        enum ToolbarAction {
+            None,
+            Copy,
+            Save,
+            Print,
+            Close,
+            SelectTool(Tool),
+            CycleColor,
+            Undo,
         }
 
-        let mut y = sel.bottom() + 10.0;
-        if y + bar_height > screen_rect.bottom() - 10.0 {
-            y = sel.bottom() - bar_height - 10.0;
-        }
+        let (h_rect, v_rect) = self.get_toolbar_rects(sel, screen_rect);
+        let mut action = ToolbarAction::None;
+        let current_tool = self.current_tool;
+        let current_color = self.current_color();
 
-        let toolbar_rect = Rect::from_min_size(Pos2::new(x, y), Vec2::new(bar_width, bar_height));
-
-        let builder = egui::UiBuilder::new().max_rect(toolbar_rect);
-        ui.allocate_new_ui(builder, |ui| {
+        // --- 1. HORIZONTAL ACTION TOOLBAR (Bottom) ---
+        let h_builder = egui::UiBuilder::new().max_rect(h_rect);
+        ui.allocate_new_ui(h_builder, |ui| {
             egui::Frame::popup(ui.style())
-                .fill(Color32::from_rgb(24, 24, 27))
-                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(63, 63, 70)))
-                .rounding(8.0)
-                .inner_margin(6.0)
+                .fill(Color32::from_rgb(238, 238, 242)) // Lightshot signature toolbar silver/grey
+                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(180, 180, 190)))
+                .rounding(3.0)
+                .inner_margin(2.0)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        // Tool 1: Rectangle Box
-                        let is_rect = self.current_tool == Tool::Rectangle;
-                        if ui.selectable_label(is_rect, "▢ Box").on_hover_text("Rectangle Box (R)").clicked() {
-                            self.current_tool = if is_rect { Tool::Select } else { Tool::Rectangle };
-                        }
+                        ui.spacing_mut().item_spacing = Vec2::new(2.0, 0.0);
 
-                        // Tool 2: Arrow
-                        let is_arrow = self.current_tool == Tool::Arrow;
-                        if ui.selectable_label(is_arrow, "➔ Arrow").on_hover_text("Arrow Tool (A)").clicked() {
-                            self.current_tool = if is_arrow { Tool::Select } else { Tool::Arrow };
-                        }
-
-                        // Tool 3: Pen
-                        let is_pen = self.current_tool == Tool::Pen;
-                        if ui.selectable_label(is_pen, "✎ Pen").on_hover_text("Freehand Pen (P)").clicked() {
-                            self.current_tool = if is_pen { Tool::Select } else { Tool::Pen };
-                        }
-
-                        ui.separator();
-
-                        // Color Palette Dots
-                        for color in PRESET_COLORS {
-                            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(16.0), egui::Sense::click());
-                            let is_active = self.active_color == color;
-                            ui.painter().circle_filled(rect.center(), 7.0_f32, color);
-                            if is_active {
-                                ui.painter().circle_stroke(rect.center(), 9.0_f32, Stroke::new(2.0_f32, Color32::WHITE));
+                        if let Some(icons) = &self.icons {
+                            if ui.add(ImageButton::new(&icons.print)).on_hover_text("Print (Ctrl+P)").clicked() {
+                                action = ToolbarAction::Print;
                             }
-                            if resp.clicked() {
-                                self.active_color = color;
+                            if ui.add(ImageButton::new(&icons.copy)).on_hover_text("Copy to Clipboard (Ctrl+C)").clicked() {
+                                action = ToolbarAction::Copy;
                             }
-                        }
-
-                        ui.separator();
-
-                        // Undo Button
-                        let undo_enabled = !self.annotations.is_empty();
-                        if ui.add_enabled(undo_enabled, egui::Button::new("↶").min_size(Vec2::new(24.0, 24.0)))
-                            .on_hover_text("Undo (Ctrl+Z)")
-                            .clicked()
-                        {
-                            self.annotations.pop();
-                        }
-
-                        ui.separator();
-
-                        // Copy Button: In-memory copy & exit (< 2ms)
-                        if ui.button(egui::RichText::new("📋 Copy").strong().color(Color32::from_rgb(16, 185, 129)))
-                            .on_hover_text("Instant In-Memory Copy to Clipboard (Ctrl+C)")
-                            .clicked()
-                        {
-                            self.action_copy(ctx, screen_rect);
-                        }
-
-                        // Save Button: Save to disk & exit
-                        if ui.button(egui::RichText::new("💾 Save").strong().color(Color32::from_rgb(14, 165, 233)))
-                            .on_hover_text("Save Image to Disk (Ctrl+S)")
-                            .clicked()
-                        {
-                            self.action_save(ctx, screen_rect);
-                        }
-
-                        // Close Button: Cancel & exit
-                        if ui.button(egui::RichText::new("✕").color(Color32::from_rgb(244, 63, 94)))
-                            .on_hover_text("Cancel and Exit (Esc)")
-                            .clicked()
-                        {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            if ui.add(ImageButton::new(&icons.save)).on_hover_text("Save to disk (Ctrl+S)").clicked() {
+                                action = ToolbarAction::Save;
+                            }
+                            if ui.add(ImageButton::new(&icons.close)).on_hover_text("Cancel (Esc)").clicked() {
+                                action = ToolbarAction::Close;
+                            }
                         }
                     });
                 });
         });
+
+        // --- 2. VERTICAL DRAWING TOOLBAR (Right) ---
+        let v_builder = egui::UiBuilder::new().max_rect(v_rect);
+        ui.allocate_new_ui(v_builder, |ui| {
+            egui::Frame::popup(ui.style())
+                .fill(Color32::from_rgb(238, 238, 242)) // Lightshot signature toolbar silver/grey
+                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(180, 180, 190)))
+                .rounding(3.0)
+                .inner_margin(2.0)
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing = Vec2::new(0.0, 2.0);
+
+                        if let Some(icons) = &self.icons {
+                            let btn = ImageButton::new(&icons.pen).selected(current_tool == Tool::Pen);
+                            if ui.add(btn).on_hover_text("Pen Tool").clicked() {
+                                action = ToolbarAction::SelectTool(if current_tool == Tool::Pen { Tool::Select } else { Tool::Pen });
+                            }
+
+                            let btn = ImageButton::new(&icons.line).selected(current_tool == Tool::Line);
+                            if ui.add(btn).on_hover_text("Line Tool").clicked() {
+                                action = ToolbarAction::SelectTool(if current_tool == Tool::Line { Tool::Select } else { Tool::Line });
+                            }
+
+                            let btn = ImageButton::new(&icons.arrow).selected(current_tool == Tool::Arrow);
+                            if ui.add(btn).on_hover_text("Arrow Tool").clicked() {
+                                action = ToolbarAction::SelectTool(if current_tool == Tool::Arrow { Tool::Select } else { Tool::Arrow });
+                            }
+
+                            let btn = ImageButton::new(&icons.rect).selected(current_tool == Tool::Rectangle);
+                            if ui.add(btn).on_hover_text("Rectangle Tool").clicked() {
+                                action = ToolbarAction::SelectTool(if current_tool == Tool::Rectangle { Tool::Select } else { Tool::Rectangle });
+                            }
+
+                            let btn = ImageButton::new(&icons.marker).selected(current_tool == Tool::Marker);
+                            if ui.add(btn).on_hover_text("Marker / Highlighter Tool").clicked() {
+                                action = ToolbarAction::SelectTool(if current_tool == Tool::Marker { Tool::Select } else { Tool::Marker });
+                            }
+
+                            let btn = ImageButton::new(&icons.text).selected(current_tool == Tool::Text);
+                            if ui.add(btn).on_hover_text("Text Tool").clicked() {
+                                action = ToolbarAction::SelectTool(if current_tool == Tool::Text { Tool::Select } else { Tool::Text });
+                            }
+
+                            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(22.0), egui::Sense::click());
+                            ui.painter().rect_filled(rect, 2.0_f32, current_color);
+                            ui.painter().rect_stroke(rect, 2.0_f32, Stroke::new(1.0_f32, Color32::from_rgb(120, 120, 130)));
+                            if resp.on_hover_text("Click to cycle color").clicked() {
+                                action = ToolbarAction::CycleColor;
+                            }
+
+                            let undo_btn = ImageButton::new(&icons.undo);
+                            if ui.add(undo_btn).on_hover_text("Undo (Ctrl+Z)").clicked() {
+                                action = ToolbarAction::Undo;
+                            }
+                        }
+                    });
+                });
+        });
+
+        // --- 3. APPLY ACTIONS SAFELY AFTER UI RENDERING ---
+        match action {
+            ToolbarAction::None => {}
+            ToolbarAction::Copy => self.action_copy(ctx, screen_rect),
+            ToolbarAction::Save => self.action_save(ctx, screen_rect),
+            ToolbarAction::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            ToolbarAction::Print => self.action_save(ctx, screen_rect),
+            ToolbarAction::SelectTool(tool) => {
+                self.current_tool = tool;
+            }
+            ToolbarAction::CycleColor => {
+                self.cycle_color();
+            }
+            ToolbarAction::Undo => {
+                self.annotations.pop();
+            }
+        }
     }
 }
 
-/// Draws an annotation on screen.
+/// Normalizes a rectangle ensuring min <= max.
+pub fn normalize_rect(r: Rect) -> Rect {
+    let min_x = r.min.x.min(r.max.x);
+    let max_x = r.min.x.max(r.max.x);
+    let min_y = r.min.y.min(r.max.y);
+    let max_y = r.min.y.max(r.max.y);
+    Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y))
+}
+
+/// Draws an annotation on the egui canvas.
 fn draw_annotation(painter: &egui::Painter, ann: &Annotation) {
     match ann {
         Annotation::Rectangle { rect, color, thickness } => {
@@ -562,10 +736,21 @@ fn draw_annotation(painter: &egui::Painter, ann: &Annotation) {
         Annotation::Arrow { start, end, color, thickness } => {
             draw_arrow(painter, *start, *end, *color, *thickness);
         }
+        Annotation::Line { start, end, color, thickness } => {
+            painter.line_segment([*start, *end], Stroke::new(*thickness, *color));
+        }
         Annotation::Pen { points, color, thickness } => {
             for window in points.windows(2) {
                 painter.line_segment([window[0], window[1]], Stroke::new(*thickness, *color));
             }
+        }
+        Annotation::Marker { points, color, thickness } => {
+            for window in points.windows(2) {
+                painter.line_segment([window[0], window[1]], Stroke::new(*thickness, *color));
+            }
+        }
+        Annotation::Text { pos, text, color, size } => {
+            painter.text(*pos, egui::Align2::LEFT_TOP, text, egui::FontId::proportional(*size), *color);
         }
     }
 }
@@ -578,7 +763,7 @@ fn draw_arrow(painter: &egui::Painter, start: Pos2, end: Pos2, color: Color32, t
     let len = dir.length();
     if len > 8.0 {
         let norm = dir / len;
-        let head_size = (thickness * 4.0).clamp(10.0, 20.0);
+        let head_size = (thickness * 4.0).clamp(10.0, 22.0);
         let perp = Vec2::new(-norm.y, norm.x) * (head_size * 0.45);
         let arrow_left = end - norm * head_size + perp;
         let arrow_right = end - norm * head_size - perp;
@@ -586,15 +771,6 @@ fn draw_arrow(painter: &egui::Painter, start: Pos2, end: Pos2, color: Color32, t
         painter.line_segment([end, arrow_left], Stroke::new(thickness, color));
         painter.line_segment([end, arrow_right], Stroke::new(thickness, color));
     }
-}
-
-/// Normalizes a rectangle ensuring min <= max.
-pub fn normalize_rect(r: Rect) -> Rect {
-    let min_x = r.min.x.min(r.max.x);
-    let max_x = r.min.x.max(r.max.x);
-    let min_y = r.min.y.min(r.max.y);
-    let max_y = r.min.y.max(r.max.y);
-    Rect::from_min_max(Pos2::new(min_x, min_y), Pos2::new(max_x, max_y))
 }
 
 /// Burns all annotations onto cropped image pixels directly in RAM.
@@ -671,14 +847,13 @@ pub fn burn_and_crop(
 
                 rasterize_line(&mut cropped, sx, sy, ex, ey, t_val, rgba);
 
-                // Arrowhead rasterization
                 let dx = (ex - sx) as f32;
                 let dy = (ey - sy) as f32;
                 let len = (dx * dx + dy * dy).sqrt();
                 if len > 6.0 {
                     let norm_x = dx / len;
                     let norm_y = dy / len;
-                    let head_size = (t_val as f32 * 4.0).clamp(10.0, 24.0);
+                    let head_size = (t_val as f32 * 4.0).clamp(10.0, 22.0);
                     let perp_x = -norm_y * (head_size * 0.45);
                     let perp_y = norm_x * (head_size * 0.45);
 
@@ -691,9 +866,18 @@ pub fn burn_and_crop(
                     rasterize_line(&mut cropped, ex, ey, rx, ry, t_val, rgba);
                 }
             }
-            Annotation::Pen { points, color, thickness } => {
+            Annotation::Line { start, end, color, thickness } => {
+                let sx = ((start.x - selection.min.x) * scale_x).round() as i32;
+                let sy = ((start.y - selection.min.y) * scale_y).round() as i32;
+                let ex = ((end.x - selection.min.x) * scale_x).round() as i32;
+                let ey = ((end.y - selection.min.y) * scale_y).round() as i32;
                 let t_val = (*thickness * scale_x).round().max(1.0) as i32;
                 let rgba = Rgba([color.r(), color.g(), color.b(), 255]);
+                rasterize_line(&mut cropped, sx, sy, ex, ey, t_val, rgba);
+            }
+            Annotation::Pen { points, color, thickness } | Annotation::Marker { points, color, thickness } => {
+                let t_val = (*thickness * scale_x).round().max(1.0) as i32;
+                let rgba = Rgba([color.r(), color.g(), color.b(), color.a()]);
 
                 for window in points.windows(2) {
                     let p1 = window[0];
@@ -706,6 +890,7 @@ pub fn burn_and_crop(
                     rasterize_line(&mut cropped, x1, y1, x2, y2, t_val, rgba);
                 }
             }
+            Annotation::Text { .. } => {}
         }
     }
 
@@ -730,7 +915,17 @@ fn rasterize_line(img: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, thick
                 let px = curr_x + ox;
                 let py = curr_y + oy;
                 if px >= 0 && px < img.width() as i32 && py >= 0 && py < img.height() as i32 {
-                    img.put_pixel(px as u32, py as u32, color);
+                    if color.0[3] < 255 {
+                        let existing = img.get_pixel(px as u32, py as u32);
+                        let a_f = color.0[3] as f32 / 255.0;
+                        let inv_a = 1.0 - a_f;
+                        let r = (color.0[0] as f32 * a_f + existing.0[0] as f32 * inv_a) as u8;
+                        let g = (color.0[1] as f32 * a_f + existing.0[1] as f32 * inv_a) as u8;
+                        let b = (color.0[2] as f32 * a_f + existing.0[2] as f32 * inv_a) as u8;
+                        img.put_pixel(px as u32, py as u32, Rgba([r, g, b, 255]));
+                    } else {
+                        img.put_pixel(px as u32, py as u32, color);
+                    }
                 }
             }
         }
@@ -786,11 +981,9 @@ mod tests {
         assert_eq!(cropped.width(), 100);
         assert_eq!(cropped.height(), 100);
 
-        // Border pixel (x = 20 - 10 = 10, y = 20 - 10 = 10) must be red
         let border_pixel = cropped.get_pixel(10, 10);
         assert_eq!(*border_pixel, Rgba([255, 0, 0, 255]));
 
-        // Outside pixel (x = 0, y = 0) must remain black
         let bg_pixel = cropped.get_pixel(0, 0);
         assert_eq!(*bg_pixel, Rgba([0, 0, 0, 255]));
     }
@@ -813,8 +1006,6 @@ mod tests {
         };
 
         let cropped = burn_and_crop(&orig, screen_rect, selection, &[arrow]);
-
-        // Point along line (x = 30, y = 10) must be green
         let line_pixel = cropped.get_pixel(30, 10);
         assert_eq!(*line_pixel, Rgba([0, 255, 0, 255]));
     }

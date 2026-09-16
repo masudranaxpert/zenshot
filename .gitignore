@@ -24,3 +24,9 @@ desktop.ini
 *.log
 .env
 dist/
+
+# Reverse engineering and extraction scratch files
+setup-lightshot.exe
+lightshot_extracted/
+inno_bin/
+*.py

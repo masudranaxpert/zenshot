@@ -19,6 +19,8 @@ rm -rf "$PKG_DIR"
 mkdir -p "$PKG_DIR/DEBIAN"
 mkdir -p "$PKG_DIR/usr/bin"
 mkdir -p "$PKG_DIR/usr/share/applications"
+mkdir -p "$PKG_DIR/usr/share/pixmaps"
+mkdir -p "$PKG_DIR/usr/share/icons/hicolor/256x256/apps"
 mkdir -p "$PKG_DIR/usr/share/icons/hicolor/scalable/apps"
 
 # Control file
@@ -29,7 +31,7 @@ Section: graphics
 Priority: optional
 Architecture: $ARCH
 Maintainer: ZenShot Team <dev@zenshot.io>
-Description: Ultra-fast, featherlight cross-platform screen capture tool
+Description: Ultra-fast, featherlight Lightshot alternative for Linux
  Operates completely in RAM with zero disk pre-saving overhead.
  Instant clipboard copy, rectangle, arrow, and pen annotations.
 EOF
@@ -39,6 +41,14 @@ cp target/release/zenshot "$PKG_DIR/usr/bin/zenshot"
 chmod 755 "$PKG_DIR/usr/bin/zenshot"
 cp zenshot.desktop "$PKG_DIR/usr/share/applications/zenshot.desktop"
 chmod 644 "$PKG_DIR/usr/share/applications/zenshot.desktop"
+
+if [ -f "assets/icons/feather.png" ]; then
+    cp assets/icons/feather.png "$PKG_DIR/usr/share/pixmaps/zenshot.png"
+    cp assets/icons/feather.png "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/zenshot.png"
+    chmod 644 "$PKG_DIR/usr/share/pixmaps/zenshot.png"
+    chmod 644 "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/zenshot.png"
+fi
+
 if [ -f "assets/icon.svg" ]; then
     cp assets/icon.svg "$PKG_DIR/usr/share/icons/hicolor/scalable/apps/zenshot.svg"
     chmod 644 "$PKG_DIR/usr/share/icons/hicolor/scalable/apps/zenshot.svg"

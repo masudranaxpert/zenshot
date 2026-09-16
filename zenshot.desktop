@@ -1,11 +1,11 @@
 [Desktop Entry]
-Name=LuminaShot
+Name=ZenShot
 GenericName=Screen Capture Tool
-Comment=Ultra-fast, featherlight cross-platform screenshot utility
-Exec=luminashot
-Icon=luminashot
+Comment=Ultra-fast, featherlight Lightshot alternative for Linux
+Exec=zenshot
+Icon=zenshot
 Terminal=false
 Type=Application
 Categories=Utility;Graphics;
-Keywords=screenshot;capture;lightshot;screen;snip;
+Keywords=screenshot;capture;lightshot;screen;snip;zenshot;
 StartupNotify=false

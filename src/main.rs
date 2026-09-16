@@ -2,6 +2,7 @@ mod app;
 mod capture;
 mod clipboard;
 mod config;
+mod icons;
 
 use app::ZenShotApp;
 use config::Config;
@@ -11,10 +12,10 @@ use std::env;
 fn main() -> eframe::Result<()> {
     let args: Vec<String> = env::args().collect();
 
-    // CLI flags handling
+    // CLI option handling
     if args.contains(&"--help".to_string()) || args.contains(&"-h".to_string()) {
-        println!("ZenShot - Featherlight Cross-Platform Screen Capture Tool");
-        println!("Version 0.1.0 (Zero-Disk In-Memory Engine)");
+        println!("ZenShot - The 100% Lightshot Clone for Linux & Windows");
+        println!("Version 0.1.0 (Zero-Disk In-Memory Performance)");
         println!();
         println!("Usage: zenshot [OPTIONS]");
         println!();
@@ -23,12 +24,9 @@ fn main() -> eframe::Result<()> {
         println!("  -h, --help  Show this help message");
         println!();
         println!("Shortcuts inside overlay:");
-        println!("  Ctrl+C      Instant in-memory copy to clipboard (RAM) & exit");
-        println!("  Ctrl+S      Save screenshot directly to configured directory & exit");
-        println!("  Ctrl+Z      Undo last annotation");
-        println!("  R           Toggle Rectangle Box tool");
-        println!("  A           Toggle Arrow tool");
-        println!("  P           Toggle Freehand Pen tool");
+        println!("  Ctrl+C      Copy selection to clipboard in RAM & exit");
+        println!("  Ctrl+S      Save screenshot to configured directory & exit");
+        println!("  Ctrl+Z      Undo last drawn annotation");
         println!("  Esc         Cancel and exit immediately (zero I/O)");
         return Ok(());
     }
@@ -44,7 +42,7 @@ fn main() -> eframe::Result<()> {
 
     let config = Config::load_or_default();
 
-    // Freeze screen into RAM before window is created
+    // Freeze screen into RAM before showing window to match Lightshot instant capture
     let screen_image = match capture::capture_screen() {
         Ok(img) => img,
         Err(err) => {
