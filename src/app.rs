@@ -1,12 +1,10 @@
 use crate::clipboard::copy_to_clipboard;
 use crate::config::Config;
 use crate::icons::{IconPair, ToolbarIcons};
-use chrono::Local;
 use eframe::egui::{
     self, Color32, CursorIcon, Key, Pos2, Rect, Stroke, Vec2,
 };
 use image::RgbaImage;
-use std::fs;
 
 /// Handle position for resizing the selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,12 +193,24 @@ pub struct ZenShotApp {
 
 impl ZenShotApp {
     pub fn new(config: Config, screen_image: RgbaImage) -> Self {
+        let selection = if config.keep_selection {
+            config.last_selection.and_then(|[x, y, w, h]| {
+                if w > 6.0 && h > 6.0 {
+                    Some(Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h)))
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+
         Self {
             config,
             screen_image,
             texture: None,
             icons: None,
-            selection: None,
+            selection,
             drag_state: DragState::None,
             current_tool: Tool::Select,
             color_index: 0,
@@ -227,18 +237,32 @@ impl ZenShotApp {
         Some(burn_and_crop(&self.screen_image, screen_rect, sel, &self.annotations, ctx))
     }
 
+    fn remember_selection(&mut self) {
+        if !self.config.keep_selection {
+            return;
+        }
+        if let Some(sel) = self.selection {
+            self.config.last_selection = Some([sel.min.x, sel.min.y, sel.width(), sel.height()]);
+            let _ = self.config.save();
+        }
+    }
+
     /// Saves cropped image to configured path and exits immediately.
     /// With nothing selected this is a no-op, matching Lightshot.
     fn action_save(&mut self, ctx: &egui::Context, screen_rect: Rect) {
         let Some(img) = self.crop_current_selection(ctx, screen_rect) else {
             return;
         };
-        let save_dir = self.config.resolve_save_dir();
-        let _ = fs::create_dir_all(&save_dir);
-        let filename = Local::now().format(&self.config.filename_format).to_string();
-        let dest_path = save_dir.join(filename);
-        let _ = img.save(&dest_path);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        self.remember_selection();
+        match crate::export::save_image(&img, &self.config) {
+            Ok(path) => {
+                if self.config.show_notifications {
+                    crate::notify::saved(&path);
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Err(err) => eprintln!("Save failed: {err}"),
+        }
     }
 
     /// Copies cropped image directly to clipboard in RAM and exits immediately.
@@ -246,8 +270,13 @@ impl ZenShotApp {
         let Some(img) = self.crop_current_selection(ctx, screen_rect) else {
             return;
         };
-        let _ = copy_to_clipboard(&img);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        self.remember_selection();
+        if copy_to_clipboard(&img).is_ok() {
+            if self.config.show_notifications {
+                crate::notify::copied();
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
     }
 
     /// Hands the cropped image to the system printer and exits.

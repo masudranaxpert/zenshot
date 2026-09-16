@@ -1,18 +1,86 @@
+use crate::hotkey::Hotkey;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-/// Application configuration persisted in TOML format (~/.config/zenshot/config.toml).
+/// Image codec written when the user hits Save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputFormat {
+    #[default]
+    Png,
+    Jpeg,
+}
+
+impl OutputFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Png => "PNG",
+            Self::Jpeg => "JPEG",
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_jpeg_quality() -> u8 {
+    90
+}
+
+/// Application configuration persisted in TOML
+/// (`~/.config/zenshot/config.toml` / `%APPDATA%\zenshot\config.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
-    /// Directory where screenshots are saved when Save is pressed.
     pub save_dir: String,
-    /// Format pattern for screenshot filenames.
     pub filename_format: String,
-    /// Default RGB color for annotations [R, G, B].
     pub stroke_color: [u8; 3],
-    /// Default stroke thickness for annotations.
     pub stroke_thickness: f32,
+
+    /// Start with Windows. Ignored on Linux (the desktop environment owns that).
+    #[serde(default = "default_true")]
+    pub autostart: bool,
+    /// Balloon / notify-send after copy or save.
+    #[serde(default = "default_true")]
+    pub show_notifications: bool,
+    /// Draw the mouse pointer onto the captured bitmap.
+    #[serde(default)]
+    pub capture_cursor: bool,
+    /// Restore the last selection rectangle the next time the overlay opens.
+    #[serde(default)]
+    pub keep_selection: bool,
+    /// Last overlay selection `[x, y, w, h]` in screen points.
+    #[serde(default)]
+    pub last_selection: Option<[f32; 4]>,
+
+    #[serde(default)]
+    pub output_format: OutputFormat,
+    #[serde(default = "default_jpeg_quality")]
+    pub jpeg_quality: u8,
+
+    #[serde(default = "Hotkey::print_screen_default")]
+    pub hotkey_capture: Hotkey,
+    #[serde(default = "default_true")]
+    pub hotkey_capture_enabled: bool,
+    #[serde(default = "Hotkey::ctrl_shift_s")]
+    pub hotkey_save_fullscreen: Hotkey,
+    #[serde(default)]
+    pub hotkey_save_fullscreen_enabled: bool,
+}
+
+impl Hotkey {
+    fn print_screen_default() -> Self {
+        Self::PRINT_SCREEN
+    }
 }
 
 impl Default for Config {
@@ -24,23 +92,31 @@ impl Default for Config {
         Self {
             save_dir: default_dir,
             filename_format: "ZenShot_%Y-%m-%d_%H-%M-%S.png".to_string(),
-            stroke_color: [239, 68, 68], // Modern vivid red
+            stroke_color: [239, 68, 68],
             stroke_thickness: 2.5,
+            autostart: true,
+            show_notifications: true,
+            capture_cursor: false,
+            keep_selection: false,
+            last_selection: None,
+            output_format: OutputFormat::Png,
+            jpeg_quality: 90,
+            hotkey_capture: Hotkey::PRINT_SCREEN,
+            hotkey_capture_enabled: true,
+            hotkey_save_fullscreen: Hotkey::ctrl_shift_s(),
+            hotkey_save_fullscreen_enabled: false,
         }
     }
 }
 
 impl Config {
-    /// Returns the configuration file path (~/.config/zenshot/config.toml).
     pub fn config_path() -> Option<PathBuf> {
         dirs::config_dir().map(|p| p.join("zenshot").join("config.toml"))
     }
 
-    /// Loads config from disk, or creates default file if missing.
     pub fn load_or_default() -> Self {
-        let path = match Self::config_path() {
-            Some(p) => p,
-            None => return Self::default(),
+        let Some(path) = Self::config_path() else {
+            return Self::default();
         };
 
         if path.exists() {
@@ -49,20 +125,23 @@ impl Config {
                     return config;
                 }
             }
+            return Self::default();
         }
 
-        // Write default configuration if not found or invalid
         let config = Self::default();
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        if let Ok(serialized) = toml::to_string_pretty(&config) {
-            let _ = fs::write(&path, serialized);
-        }
+        let _ = config.save();
         config
     }
 
-    /// Expands ~ or relative path to absolute PathBuf.
+    pub fn save(&self) -> Result<(), String> {
+        let path = Self::config_path().ok_or_else(|| "Could not resolve config path".to_string())?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let serialized = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
+        fs::write(&path, serialized).map_err(|e| e.to_string())
+    }
+
     pub fn resolve_save_dir(&self) -> PathBuf {
         let path_str = &self.save_dir;
         if path_str.starts_with('~') {
@@ -71,5 +150,29 @@ impl Config {
             }
         }
         PathBuf::from(path_str)
+    }
+
+    pub fn jpeg_quality_clamped(&self) -> u8 {
+        self.jpeg_quality.clamp(10, 100)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_config_without_new_fields_still_parses() {
+        let toml = r#"
+save_dir = "C:\\shots"
+filename_format = "shot.png"
+stroke_color = [1, 2, 3]
+stroke_thickness = 2.0
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.save_dir, "C:\\shots");
+        assert!(cfg.autostart);
+        assert_eq!(cfg.hotkey_capture, Hotkey::PRINT_SCREEN);
+        assert_eq!(cfg.output_format, OutputFormat::Png);
     }
 }

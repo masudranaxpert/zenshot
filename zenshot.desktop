@@ -1,11 +1,17 @@
 [Desktop Entry]
 Name=ZenShot
 GenericName=Screen Capture Tool
-Comment=Ultra-fast, featherlight Lightshot alternative for Linux
+Comment=Featherlight Lightshot-style screenshot tool
 Exec=zenshot
+TryExec=zenshot
 Icon=zenshot
 Terminal=false
 Type=Application
 Categories=Utility;Graphics;
 Keywords=screenshot;capture;lightshot;screen;snip;zenshot;
 StartupNotify=false
+Actions=Options;
+
+[Desktop Action Options]
+Name=Options
+Exec=zenshot --options

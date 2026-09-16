@@ -2,7 +2,7 @@ use image::RgbaImage;
 
 /// Captures virtual screen content into memory without writing to disk.
 #[cfg(target_os = "windows")]
-pub fn capture_screen() -> Result<RgbaImage, String> {
+pub fn capture_screen(capture_cursor: bool) -> Result<RgbaImage, String> {
     use windows_sys::Win32::Graphics::Gdi::*;
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -25,6 +25,10 @@ pub fn capture_screen() -> Result<RgbaImage, String> {
         let old_obj = SelectObject(hdc_mem, hbm);
 
         BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, 0, 0, SRCCOPY);
+
+        if capture_cursor {
+            draw_cursor(hdc_mem);
+        }
 
         let mut bi: BITMAPINFO = std::mem::zeroed();
         bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
@@ -65,9 +69,60 @@ pub fn capture_screen() -> Result<RgbaImage, String> {
     }
 }
 
+#[cfg(target_os = "windows")]
+unsafe fn draw_cursor(hdc_mem: windows_sys::Win32::Graphics::Gdi::HDC) {
+    use windows_sys::Win32::Graphics::Gdi::DeleteObject;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, ICONINFO,
+    };
+
+    let mut info = CURSORINFO {
+        cbSize: std::mem::size_of::<CURSORINFO>() as u32,
+        flags: 0,
+        hCursor: std::ptr::null_mut(),
+        ptScreenPos: std::mem::zeroed(),
+    };
+    if GetCursorInfo(&mut info) == 0 || info.flags != CURSOR_SHOWING {
+        return;
+    }
+
+    let mut icon = ICONINFO {
+        fIcon: 0,
+        xHotspot: 0,
+        yHotspot: 0,
+        hbmMask: std::ptr::null_mut(),
+        hbmColor: std::ptr::null_mut(),
+    };
+    let (dx, dy) = if GetIconInfo(info.hCursor, &mut icon) != 0 {
+        let x = info.ptScreenPos.x - icon.xHotspot as i32;
+        let y = info.ptScreenPos.y - icon.yHotspot as i32;
+        if !icon.hbmMask.is_null() {
+            DeleteObject(icon.hbmMask);
+        }
+        if !icon.hbmColor.is_null() {
+            DeleteObject(icon.hbmColor);
+        }
+        (x, y)
+    } else {
+        (info.ptScreenPos.x, info.ptScreenPos.y)
+    };
+
+    DrawIconEx(
+        hdc_mem,
+        dx,
+        dy,
+        info.hCursor,
+        0,
+        0,
+        0,
+        std::ptr::null_mut(),
+        DI_NORMAL,
+    );
+}
+
 /// Captures screen content on Linux (X11 / Wayland) using xcap.
 #[cfg(not(target_os = "windows"))]
-pub fn capture_screen() -> Result<RgbaImage, String> {
+pub fn capture_screen(_capture_cursor: bool) -> Result<RgbaImage, String> {
     let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
     let primary = monitors
         .into_iter()

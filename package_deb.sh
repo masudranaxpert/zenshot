@@ -42,7 +42,12 @@ chmod 755 "$PKG_DIR/usr/bin/zenshot"
 cp zenshot.desktop "$PKG_DIR/usr/share/applications/zenshot.desktop"
 chmod 644 "$PKG_DIR/usr/share/applications/zenshot.desktop"
 
-if [ -f "assets/icons/feather.png" ]; then
+if [ -f "assets/zenshot.png" ]; then
+    cp assets/zenshot.png "$PKG_DIR/usr/share/pixmaps/zenshot.png"
+    cp assets/zenshot.png "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/zenshot.png"
+    chmod 644 "$PKG_DIR/usr/share/pixmaps/zenshot.png"
+    chmod 644 "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/zenshot.png"
+elif [ -f "assets/icons/feather.png" ]; then
     cp assets/icons/feather.png "$PKG_DIR/usr/share/pixmaps/zenshot.png"
     cp assets/icons/feather.png "$PKG_DIR/usr/share/icons/hicolor/256x256/apps/zenshot.png"
     chmod 644 "$PKG_DIR/usr/share/pixmaps/zenshot.png"
