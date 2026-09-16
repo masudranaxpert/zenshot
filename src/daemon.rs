@@ -56,9 +56,8 @@ pub fn run() -> eframe::Result<()> {
     };
 
     let config = Config::load_or_default();
-    if config.autostart {
-        let _ = crate::autostart::set_enabled(true);
-    }
+    // Config is the source of truth: ticking Options off must also clear the Run key.
+    let _ = crate::autostart::set_enabled(config.autostart);
 
     unsafe { message_loop(config) }
 }
@@ -368,6 +367,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 }
             }
             register_hotkeys();
+            let _ = crate::autostart::set_enabled(config.autostart);
             0
         }
         WM_DESTROY => {

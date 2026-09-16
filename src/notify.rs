@@ -65,7 +65,7 @@ fn linux_tell(title: &str, body: &str) {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .spawn();
 }
 
 pub fn wide(s: &str) -> Vec<u16> {

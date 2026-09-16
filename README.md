@@ -10,7 +10,7 @@ Windows ships as a tray app with a setup installer (auto-start + hotkeys), the s
 ## Windows (setup.exe)
 
 1. Run `zenshot-setup-<version>.exe`.
-2. Leave **Start ZenShot when I log in** checked.
+2. Leave **Start ZenShot with Windows** checked.
 3. Finish. A tray icon appears.
 4. Press **Print Screen** (change it later in **Options → Hotkeys**).
 
@@ -32,12 +32,13 @@ Wayland compositors own the PrintScreen key. Industry-standard tools (Flameshot,
 
 ```bash
 sudo dpkg -i zenshot_<version>_amd64.deb
+sudo apt-get install -f
 ```
 
-Then bind PrintScreen:
+Then bind **Ctrl+Shift+S**:
 
 1. Settings → Keyboard → Custom Shortcuts → **+**
-2. Name `ZenShot`, command `zenshot`, shortcut `Print`.
+2. Name `ZenShot`, command `zenshot`, shortcut `Ctrl+Shift+S`.
 
 ```
 zenshot                 open the overlay

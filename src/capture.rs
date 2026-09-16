@@ -130,5 +130,9 @@ pub fn capture_screen(_capture_cursor: bool) -> Result<RgbaImage, String> {
         .or_else(|| xcap::Monitor::all().ok()?.into_iter().next())
         .ok_or_else(|| "No active monitor found for capture".to_string())?;
 
-    primary.capture_image().map_err(|e| e.to_string())
+    primary.capture_image().map_err(|e| {
+        format!(
+            "{e}. On Wayland grant the portal screenshot permission; on X11 check $DISPLAY."
+        )
+    })
 }

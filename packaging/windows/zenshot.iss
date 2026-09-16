@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "2.3.0"
+  #define MyAppVersion "2.5.0"
 #endif
 
 #define MyAppName "ZenShot"
@@ -37,7 +37,7 @@ ChangesAssociations=no
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "autostart"; Description: "Start {#MyAppName} when I log in"; GroupDescription: "Additional options:"; Flags: checkedonce
+Name: "autostart"; Description: "Start {#MyAppName} with Windows"; GroupDescription: "Additional options:"; Flags: checkedonce
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional options:"; Flags: unchecked
 
 [Files]
@@ -55,7 +55,8 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ZenShot"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--enable-autostart"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent; Tasks: autostart
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--disable-autostart"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent; Tasks: not autostart
 
 [UninstallRun]
 Filename: "{cmd}"; Parameters: "/C taskkill /IM {#MyAppExeName} /F"; Flags: runhidden; RunOnceId: "StopZenShot"

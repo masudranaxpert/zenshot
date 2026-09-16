@@ -46,7 +46,7 @@ pub struct Config {
     pub stroke_color: [u8; 3],
     pub stroke_thickness: f32,
 
-    /// Start with Windows. Ignored on Linux (the desktop environment owns that).
+    /// Launch the tray when Windows starts. Ignored on Linux.
     #[serde(default = "default_true")]
     pub autostart: bool,
     /// Balloon / notify-send after copy or save.
@@ -110,6 +110,14 @@ impl Default for Config {
 }
 
 impl Config {
+    pub fn set_autostart(on: bool) -> Result<(), String> {
+        let mut config = Self::load_or_default();
+        config.autostart = on;
+        config.save()?;
+        crate::autostart::set_enabled(on)?;
+        Ok(())
+    }
+
     pub fn config_path() -> Option<PathBuf> {
         dirs::config_dir().map(|p| p.join("zenshot").join("config.toml"))
     }

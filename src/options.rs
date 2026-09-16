@@ -34,11 +34,7 @@ impl OptionsApp {
 }
 
 pub fn run() -> eframe::Result<()> {
-    let mut config = Config::load_or_default();
-    #[cfg(windows)]
-    {
-        config.autostart = crate::autostart::is_enabled();
-    }
+    let config = Config::load_or_default();
     let native_options = eframe::NativeOptions {
         viewport: ViewportBuilder::default()
             .with_title("Options")
@@ -119,7 +115,7 @@ impl OptionsApp {
 
         #[cfg(windows)]
         {
-            ui.checkbox(&mut self.config.autostart, "Start ZenShot when I log in");
+            ui.checkbox(&mut self.config.autostart, "Start ZenShot with Windows");
         }
 
         ui.checkbox(
@@ -148,7 +144,7 @@ impl OptionsApp {
             ui.add_space(16.0);
             ui.label(
                 RichText::new(
-                    "Linux does not need a tray process. Bind PrintScreen (or any key) in your desktop settings to the command `zenshot`.",
+                    "Linux does not need a tray process. Bind Ctrl+Shift+S in your desktop settings to the command `zenshot`.",
                 )
                 .weak(),
             );

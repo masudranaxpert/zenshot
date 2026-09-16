@@ -271,12 +271,14 @@ impl ZenShotApp {
             return;
         };
         self.remember_selection();
-        if copy_to_clipboard(&img).is_ok() {
-            if self.config.show_notifications {
-                crate::notify::copied();
-            }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        if let Err(err) = copy_to_clipboard(&img) {
+            eprintln!("{err}");
+            return;
         }
+        if self.config.show_notifications {
+            crate::notify::copied();
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
     /// Hands the cropped image to the system printer and exits.

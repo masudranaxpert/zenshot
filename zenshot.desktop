@@ -10,8 +10,14 @@ Type=Application
 Categories=Utility;Graphics;
 Keywords=screenshot;capture;lightshot;screen;snip;zenshot;
 StartupNotify=false
-Actions=Options;
+StartupWMClass=ZenShot
+X-GNOME-UsesNotifications=true
+Actions=Options;Fullscreen;
 
 [Desktop Action Options]
 Name=Options
 Exec=zenshot --options
+
+[Desktop Action Fullscreen]
+Name=Save fullscreen
+Exec=zenshot --save-fullscreen

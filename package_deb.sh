@@ -30,7 +30,9 @@ Version: $VERSION
 Section: graphics
 Priority: optional
 Architecture: $ARCH
-Maintainer: ZenShot Team <dev@zenshot.io>
+Maintainer: Masud Rana <masudranaxpert@gmail.com>
+Depends: libxkbcommon0, libwayland-client0, libegl1, libgl1, libx11-6, libxcb1, libxcb-render0, libxcb-shape0, libxcb-xfixes0
+Recommends: xdg-desktop-portal
 Description: Ultra-fast, featherlight Lightshot alternative for Linux
  Operates completely in RAM with zero disk pre-saving overhead.
  Instant clipboard copy, rectangle, arrow, and pen annotations.

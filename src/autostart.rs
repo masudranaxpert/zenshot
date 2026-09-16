@@ -63,6 +63,7 @@ mod windows_impl {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_enabled() -> bool {
         unsafe {
             let sub = wide(RUN_KEY);
@@ -90,7 +91,7 @@ mod windows_impl {
 }
 
 #[cfg(windows)]
-pub use windows_impl::{is_enabled, set_enabled};
+pub use windows_impl::set_enabled;
 
 #[cfg(not(windows))]
 pub fn set_enabled(_on: bool) -> Result<(), String> {
@@ -98,6 +99,7 @@ pub fn set_enabled(_on: bool) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub fn is_enabled() -> bool {
     false
 }

@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
 mod autostart;
 mod capture;
@@ -21,6 +23,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> eframe::Result<()> {
     #[cfg(windows)]
+    attach_parent_console();
+    #[cfg(windows)]
     enable_dpi();
 
     match Mode::from_args(env::args().skip(1).collect()) {
@@ -41,7 +45,20 @@ fn main() -> eframe::Result<()> {
         }
         Mode::Options => options::run(),
         Mode::Daemon => run_daemon(),
+        Mode::SetAutostart(on) => {
+            if let Err(err) = Config::set_autostart(on) {
+                eprintln!("{err}");
+            }
+            run_daemon()
+        }
         Mode::SaveFullscreen => save_fullscreen(),
+        #[cfg(target_os = "linux")]
+        Mode::ClipboardServe => {
+            if let Err(err) = clipboard::serve_from_stdin() {
+                eprintln!("{err}");
+            }
+            Ok(())
+        }
         Mode::Capture => run_capture(),
     }
 }
@@ -57,6 +74,10 @@ fn run_capture() -> eframe::Result<()> {
         Ok(img) => img,
         Err(err) => {
             eprintln!("Error capturing screen: {err}");
+            #[cfg(not(windows))]
+            eprintln!(
+                "On Wayland, allow the screenshot permission if a portal dialog appears."
+            );
             return Ok(());
         }
     };
@@ -103,10 +124,21 @@ fn run_daemon() -> eframe::Result<()> {
     {
         eprintln!(
             "ZenShot does not stay resident on Linux.\n\
-             Bind PrintScreen in your desktop settings to `zenshot`,\n\
+             Bind Ctrl+Shift+S in your desktop settings to `zenshot`,\n\
              and open settings with `zenshot --options`."
         );
         Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn attach_parent_console() {
+    // Release builds are a GUI subsystem binary, so Explorer would otherwise
+    // allocate a console. Attaching to an already-open terminal keeps
+    // `zenshot --help` visible when launched from cmd/PowerShell.
+    const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
+    unsafe {
+        let _ = windows_sys::Win32::System::Console::AttachConsole(ATTACH_PARENT_PROCESS);
     }
 }
 
@@ -127,10 +159,17 @@ enum Mode {
     PrintConfig,
     Help,
     Version,
+    SetAutostart(bool),
+    #[cfg(target_os = "linux")]
+    ClipboardServe,
 }
 
 impl Mode {
     fn from_args(args: Vec<String>) -> Self {
+        #[cfg(target_os = "linux")]
+        if args.first().map(String::as_str) == Some(clipboard::CLIPBOARD_SERVE_ARG) {
+            return Self::ClipboardServe;
+        }
         if args.iter().any(|a| a == "--help" || a == "-h") {
             return Self::Help;
         }
@@ -142,6 +181,12 @@ impl Mode {
         }
         if args.iter().any(|a| a == "--options" || a == "-o") {
             return Self::Options;
+        }
+        if args.iter().any(|a| a == "--enable-autostart") {
+            return Self::SetAutostart(true);
+        }
+        if args.iter().any(|a| a == "--disable-autostart") {
+            return Self::SetAutostart(false);
         }
         if args.iter().any(|a| a == "--daemon") {
             return Self::Daemon;
@@ -175,6 +220,8 @@ fn print_help() {
     println!("  --options, -o       Open the settings window");
     println!("  --save-fullscreen   Capture the whole screen and save");
     println!("  --daemon            Stay in the tray (Windows)");
+    println!("  --enable-autostart  Start with Windows, then stay in the tray");
+    println!("  --disable-autostart Do not start with Windows, then stay in the tray");
     println!("  --config            Print the configuration file path");
     println!("  -V, --version       Print version");
     println!("  -h, --help          Show this help");
@@ -184,7 +231,7 @@ fn print_help() {
         println!("Print Screen (or the hotkey in Options) opens the overlay.");
     } else {
         println!("With no arguments on Linux, ZenShot opens the overlay.");
-        println!("Bind PrintScreen in your desktop settings to `zenshot`.");
+        println!("Bind Ctrl+Shift+S in your desktop settings to `zenshot`.");
     }
     println!();
     println!("Shortcuts inside overlay:");
