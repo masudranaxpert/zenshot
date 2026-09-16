@@ -53,7 +53,10 @@ chmod +x package_deb.sh
 ---
 
 ### Option 2: Automated Installation from Source
+Ensure build dependencies are installed on Ubuntu:
 ```bash
+sudo apt update
+sudo apt install -y pkg-config libpipewire-0.3-dev libspa-0.2-dev libclang-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libx11-dev
 chmod +x install.sh
 ./install.sh
 ```
