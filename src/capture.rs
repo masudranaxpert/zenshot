@@ -3,6 +3,23 @@ use image::RgbaImage;
 /// Captures virtual screen content into memory without writing to disk.
 #[cfg(target_os = "windows")]
 pub fn capture_screen(capture_cursor: bool) -> Result<RgbaImage, String> {
+    capture_gdi(capture_cursor, false).map(|(img, _)| img)
+}
+
+/// Same capture, then immediately freeze the desktop with a GDI popup so the
+/// user never sees a wait cursor or a black OpenGL window.
+#[cfg(target_os = "windows")]
+pub fn capture_screen_with_cover(
+    capture_cursor: bool,
+) -> Result<(RgbaImage, Option<crate::cover::FrozenDesktop>), String> {
+    capture_gdi(capture_cursor, true)
+}
+
+#[cfg(target_os = "windows")]
+fn capture_gdi(
+    capture_cursor: bool,
+    freeze: bool,
+) -> Result<(RgbaImage, Option<crate::cover::FrozenDesktop>), String> {
     use windows_sys::Win32::Graphics::Gdi::*;
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -58,14 +75,22 @@ pub fn capture_screen(capture_cursor: bool) -> Result<RgbaImage, String> {
             return Err("GetDIBits returned no scanlines".to_string());
         }
 
+        // Freeze BEFORE the RGBA conversion so the popup is on screen in ~one blit.
+        let cover = if freeze {
+            crate::cover::FrozenDesktop::show_bgra(width, height, &raw)
+        } else {
+            None
+        };
+
         // Win32 GDI outputs BGRA; swap B and R channels to RGBA in RAM
         for chunk in raw.chunks_exact_mut(4) {
             chunk.swap(0, 2);
             chunk[3] = 255;
         }
 
-        RgbaImage::from_raw(width as u32, height as u32, raw)
-            .ok_or_else(|| "Failed to construct in-memory image buffer".to_string())
+        let image = RgbaImage::from_raw(width as u32, height as u32, raw)
+            .ok_or_else(|| "Failed to construct in-memory image buffer".to_string())?;
+        Ok((image, cover))
     }
 }
 

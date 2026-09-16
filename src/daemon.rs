@@ -239,8 +239,48 @@ fn balloon(title: &str, body: &str) {
 }
 
 fn spawn_self(arg: &str) {
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = std::process::Command::new(exe).arg(arg).spawn();
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    unsafe {
+        // Tray click is a user gesture: let the overlay steal focus.
+        let _ = windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+            windows_sys::Win32::UI::WindowsAndMessaging::ASFW_ANY,
+        );
+    }
+
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        CreateProcessW, PROCESS_INFORMATION, STARTF_FORCEOFFFEEDBACK, STARTUPINFOW,
+    };
+
+    let exe_s = exe.to_string_lossy();
+    let mut cmd = crate::notify::wide(&format!("\"{exe_s}\" {arg}"));
+    let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
+    si.cb = mem::size_of::<STARTUPINFOW>() as u32;
+    // Without this, Explorer/tray CreateProcess shows IDC_APPSTARTING (the
+    // spinning wait cursor) until the child creates a visible window.
+    si.dwFlags = STARTF_FORCEOFFFEEDBACK;
+    let mut pi: PROCESS_INFORMATION = unsafe { mem::zeroed() };
+    let ok = unsafe {
+        CreateProcessW(
+            ptr::null(),
+            cmd.as_mut_ptr(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            0,
+            0,
+            ptr::null_mut(),
+            ptr::null(),
+            &si,
+            &mut pi,
+        )
+    };
+    if ok != 0 {
+        unsafe {
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        }
     }
 }
 

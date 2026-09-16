@@ -189,10 +189,15 @@ pub struct ZenShotApp {
     text_input: String,
     active_text_pos: Option<Pos2>,
     last_pointer: Pos2,
+    /// Drop the GDI freeze-frame only after the GL overlay has presented.
+    #[cfg(windows)]
+    cover: Option<crate::cover::FrozenDesktop>,
+    #[cfg(windows)]
+    revealed_frames: u8,
 }
 
 impl ZenShotApp {
-    pub fn new(config: Config, screen_image: RgbaImage) -> Self {
+    pub fn new(config: Config, screen_image: RgbaImage, ctx: &egui::Context) -> Self {
         let selection = if config.keep_selection {
             config.last_selection.and_then(|[x, y, w, h]| {
                 if w > 6.0 && h > 6.0 {
@@ -205,11 +210,16 @@ impl ZenShotApp {
             None
         };
 
+        let size = [screen_image.width() as usize, screen_image.height() as usize];
+        let pixels = screen_image.as_flat_samples();
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+        let texture = ctx.load_texture("desktop", color_image, egui::TextureOptions::NEAREST);
+
         Self {
             config,
             screen_image,
-            texture: None,
-            icons: None,
+            texture: Some(texture),
+            icons: Some(ToolbarIcons::load(ctx)),
             selection,
             drag_state: DragState::None,
             current_tool: Tool::Select,
@@ -218,7 +228,28 @@ impl ZenShotApp {
             text_input: String::new(),
             active_text_pos: None,
             last_pointer: Pos2::ZERO,
+            #[cfg(windows)]
+            cover: None,
+            #[cfg(windows)]
+            revealed_frames: 0,
         }
+    }
+
+    #[cfg(windows)]
+    pub fn with_cover(mut self, cover: Option<crate::cover::FrozenDesktop>) -> Self {
+        self.cover = cover;
+        self
+    }
+
+    /// Hide the overlay immediately — before crop/clipboard — so Copy/Esc
+    /// feels like Lightshot (the select area is gone, then work happens).
+    fn vanish(&mut self, ctx: &egui::Context) {
+        #[cfg(windows)]
+        {
+            crate::cover::hide_overlay_windows();
+            self.cover = None;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
     /// Active drawing color from palette.
@@ -250,6 +281,10 @@ impl ZenShotApp {
     /// Saves cropped image to configured path and exits immediately.
     /// With nothing selected this is a no-op, matching Lightshot.
     fn action_save(&mut self, ctx: &egui::Context, screen_rect: Rect) {
+        if self.selection.is_none() {
+            return;
+        }
+        self.vanish(ctx);
         let Some(img) = self.crop_current_selection(ctx, screen_rect) else {
             return;
         };
@@ -267,6 +302,10 @@ impl ZenShotApp {
 
     /// Copies cropped image directly to clipboard in RAM and exits immediately.
     fn action_copy(&mut self, ctx: &egui::Context, screen_rect: Rect) {
+        if self.selection.is_none() {
+            return;
+        }
+        self.vanish(ctx);
         let Some(img) = self.crop_current_selection(ctx, screen_rect) else {
             return;
         };
@@ -285,6 +324,10 @@ impl ZenShotApp {
     /// Printing is the one path that has to touch disk, since both print
     /// backends take a file rather than a stream.
     fn action_print(&mut self, ctx: &egui::Context, screen_rect: Rect) {
+        if self.selection.is_none() {
+            return;
+        }
+        self.vanish(ctx);
         let Some(img) = self.crop_current_selection(ctx, screen_rect) else {
             return;
         };
@@ -359,7 +402,7 @@ impl ZenShotApp {
 /// 29x204 strips shipped in Lightshot.dll: a 1px translucent black frame, a
 /// (250,251,251) highlight row, a linear body fade to (211,214,217), then a
 /// two-row drop shadow. `vertical` runs the fade left-to-right instead.
-fn paint_lightshot_toolbar(painter: &egui::Painter, rect: Rect, vertical: bool) {
+pub(crate) fn paint_lightshot_toolbar(painter: &egui::Painter, rect: Rect, vertical: bool) {
     let extent = if vertical { rect.width() } else { rect.height() };
     let rows = extent.round() as i32;
 
@@ -474,17 +517,6 @@ fn icon_button(ui: &mut egui::Ui, icon: &IconPair, size: Vec2, active: bool, tip
 
 impl eframe::App for ZenShotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 1. Initialize desktop texture and icons once
-        if self.texture.is_none() {
-            let size = [self.screen_image.width() as usize, self.screen_image.height() as usize];
-            let pixels = self.screen_image.as_flat_samples();
-            let color_image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
-            self.texture = Some(ctx.load_texture("desktop", color_image, egui::TextureOptions::LINEAR));
-        }
-        if self.icons.is_none() {
-            self.icons = Some(ToolbarIcons::load(ctx));
-        }
-
         let screen_rect = ctx.screen_rect();
 
         // 2. Global hotkeys. The accelerator strings in Lightshot.dll pair up as
@@ -503,6 +535,7 @@ impl eframe::App for ZenShotApp {
             };
 
             if ctx.input(|i| i.key_pressed(Key::Escape)) || hit(Key::X) {
+                self.vanish(ctx);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return;
             }
@@ -981,7 +1014,10 @@ impl ZenShotApp {
             ToolbarAction::None => {}
             ToolbarAction::Copy => self.action_copy(ctx, screen_rect),
             ToolbarAction::Save => self.action_save(ctx, screen_rect),
-            ToolbarAction::Close => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            ToolbarAction::Close => {
+                self.vanish(ctx);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
             ToolbarAction::Print => self.action_print(ctx, screen_rect),
             ToolbarAction::SelectTool(tool) => {
                 self.current_tool = tool;
@@ -991,6 +1027,17 @@ impl ZenShotApp {
             }
             ToolbarAction::Undo => {
                 self.annotations.pop();
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            if self.cover.is_some() {
+                self.revealed_frames = self.revealed_frames.saturating_add(1);
+                ctx.request_repaint();
+                if self.revealed_frames >= 2 {
+                    self.cover = None;
+                }
             }
         }
     }

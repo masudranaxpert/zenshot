@@ -19,13 +19,6 @@ impl OutputFormat {
             Self::Jpeg => "jpg",
         }
     }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Png => "PNG",
-            Self::Jpeg => "JPEG",
-        }
-    }
 }
 
 fn default_true() -> bool {

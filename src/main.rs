@@ -6,6 +6,8 @@ mod capture;
 mod clipboard;
 mod config;
 #[cfg(windows)]
+mod cover;
+#[cfg(windows)]
 mod daemon;
 mod export;
 mod hotkey;
@@ -70,32 +72,73 @@ fn run_capture() -> eframe::Result<()> {
     }
 
     let config = Config::load_or_default();
+
+    #[cfg(windows)]
+    let (screen_image, cover) = match capture::capture_screen_with_cover(config.capture_cursor) {
+        Ok(pair) => pair,
+        Err(err) => {
+            eprintln!("Error capturing screen: {err}");
+            return Ok(());
+        }
+    };
+    #[cfg(not(windows))]
     let screen_image = match capture::capture_screen(config.capture_cursor) {
         Ok(img) => img,
         Err(err) => {
             eprintln!("Error capturing screen: {err}");
-            #[cfg(not(windows))]
-            eprintln!(
-                "On Wayland, allow the screenshot permission if a portal dialog appears."
-            );
+            eprintln!("On Wayland, allow the screenshot permission if a portal dialog appears.");
             return Ok(());
         }
     };
 
-    let native_options = eframe::NativeOptions {
-        viewport: ViewportBuilder::default()
-            .with_title("ZenShot")
-            .with_fullscreen(true)
-            .with_decorations(false)
-            .with_always_on_top(),
-        ..Default::default()
-    };
+    let native_options = overlay_native_options(&screen_image);
 
     eframe::run_native(
         "ZenShot",
         native_options,
-        Box::new(|_cc| Ok(Box::new(ZenShotApp::new(config, screen_image)))),
+        Box::new(move |cc| {
+            let mut app = ZenShotApp::new(config, screen_image, &cc.egui_ctx);
+            #[cfg(windows)]
+            {
+                app = app.with_cover(cover);
+            }
+            Ok(Box::new(app))
+        }),
     )
+}
+
+fn overlay_native_options(screen_image: &image::RgbaImage) -> eframe::NativeOptions {
+    let width = screen_image.width() as f32;
+    let height = screen_image.height() as f32;
+    let (logical_w, logical_h) = overlay_logical_size(width, height);
+
+    eframe::NativeOptions {
+        persist_window: false,
+        dithering: false,
+        viewport: ViewportBuilder::default()
+            .with_title("ZenShot")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_taskbar(false)
+            .with_always_on_top()
+            .with_fullscreen(false)
+            .with_position(eframe::egui::pos2(0.0, 0.0))
+            .with_inner_size(eframe::egui::vec2(logical_w, logical_h)),
+        ..Default::default()
+    }
+}
+
+fn overlay_logical_size(physical_w: f32, physical_h: f32) -> (f32, f32) {
+    #[cfg(windows)]
+    {
+        let scale = (unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() } as f32 / 96.0)
+            .max(1.0);
+        (physical_w / scale, physical_h / scale)
+    }
+    #[cfg(not(windows))]
+    {
+        (physical_w, physical_h)
+    }
 }
 
 fn save_fullscreen() -> eframe::Result<()> {
