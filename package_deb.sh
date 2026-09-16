@@ -2,7 +2,7 @@
 # Script to package ZenShot as a standard Debian / Ubuntu (.deb) package
 set -e
 
-VERSION="0.1.0"
+VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f2)
 ARCH="amd64"
 PKG_DIR="target/debian_pkg"
 

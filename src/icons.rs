@@ -44,5 +44,7 @@ fn load_texture(ctx: &egui::Context, id: &str, png_bytes: &[u8]) -> TextureHandl
     let size = [img.width() as usize, img.height() as usize];
     let pixels = img.into_raw();
     let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
-    ctx.load_texture(id, color_image, TextureOptions::LINEAR)
+    // These are 20x20 / 24x20 pixel-art sprites drawn at their native size, so
+    // linear filtering only smears the 1px strokes.
+    ctx.load_texture(id, color_image, TextureOptions::NEAREST)
 }

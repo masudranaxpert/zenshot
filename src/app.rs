@@ -102,6 +102,68 @@ fn bar_length(n: f32, icon: f32) -> f32 {
     n * (icon + 2.0 * BTN_PAD) + (n - 1.0) * BTN_GAP + 2.0 * BAR_MARGIN
 }
 
+/// Selection chrome, measured from Lightshot's own overlay: the outline is a
+/// 1px marching-ants pattern of three black then three white pixels, the eight
+/// grips are 6x6 black squares ringed in white, and the size badge is black at
+/// ~79% over the dimmed desktop.
+const ANTS_DASH: f32 = 3.0;
+const HANDLE_SIZE: f32 = 6.0;
+const BADGE_FONT_SIZE: f32 = 11.0;
+const BADGE_BACKDROP: Color32 = Color32::from_black_alpha(201);
+
+/// The eight resize grips, clockwise from the top-left corner.
+fn handle_positions(sel: Rect) -> [Pos2; 8] {
+    [
+        sel.left_top(),
+        Pos2::new(sel.center().x, sel.top()),
+        sel.right_top(),
+        Pos2::new(sel.right(), sel.center().y),
+        sel.right_bottom(),
+        Pos2::new(sel.center().x, sel.bottom()),
+        sel.left_bottom(),
+        Pos2::new(sel.left(), sel.center().y),
+    ]
+}
+
+/// Draws the alternating black/white 1px selection outline.
+fn paint_marching_ants(painter: &egui::Painter, rect: Rect) {
+    let edges = [
+        (rect.left_top(), rect.right_top()),
+        (rect.right_top(), rect.right_bottom()),
+        (rect.right_bottom(), rect.left_bottom()),
+        (rect.left_bottom(), rect.left_top()),
+    ];
+
+    for (from, to) in edges {
+        let span = to - from;
+        let len = span.length();
+        if len <= 0.0 {
+            continue;
+        }
+        let dir = span / len;
+
+        let mut travelled = 0.0;
+        let mut ink_black = true;
+        while travelled < len {
+            let step = ANTS_DASH.min(len - travelled);
+            let color = if ink_black { Color32::BLACK } else { Color32::WHITE };
+            painter.line_segment(
+                [from + dir * travelled, from + dir * (travelled + step)],
+                Stroke::new(1.0_f32, color),
+            );
+            travelled += step;
+            ink_black = !ink_black;
+        }
+    }
+}
+
+/// Draws one resize grip.
+fn paint_handle(painter: &egui::Painter, center: Pos2) {
+    let outer = Rect::from_center_size(center, Vec2::splat(HANDLE_SIZE));
+    painter.rect_filled(outer, 0.0_f32, Color32::WHITE);
+    painter.rect_filled(outer.shrink(1.0), 0.0_f32, Color32::BLACK);
+}
+
 /// Dragging interaction state.
 #[derive(Debug, Clone)]
 enum DragState {
@@ -204,24 +266,25 @@ impl ZenShotApp {
 
     /// Checks if mouse point hits any of the 8 selection handles.
     fn hit_test_handles(&self, sel: Rect, point: Pos2) -> Option<Handle> {
-        const HANDLE_RADIUS: f32 = 8.0;
-        let handles = [
-            (Handle::TopLeft, sel.left_top()),
-            (Handle::Top, Pos2::new(sel.center().x, sel.top())),
-            (Handle::TopRight, sel.right_top()),
-            (Handle::Right, Pos2::new(sel.right(), sel.center().y)),
-            (Handle::BottomRight, sel.right_bottom()),
-            (Handle::Bottom, Pos2::new(sel.center().x, sel.bottom())),
-            (Handle::BottomLeft, sel.left_bottom()),
-            (Handle::Left, Pos2::new(sel.left(), sel.center().y)),
+        const HANDLE_ORDER: [Handle; 8] = [
+            Handle::TopLeft,
+            Handle::Top,
+            Handle::TopRight,
+            Handle::Right,
+            Handle::BottomRight,
+            Handle::Bottom,
+            Handle::BottomLeft,
+            Handle::Left,
         ];
 
-        for (handle, pos) in handles {
-            if (point - pos).length() <= HANDLE_RADIUS {
-                return Some(handle);
-            }
-        }
-        None
+        // A couple of pixels of slack past the drawn grip, so they stay easy to
+        // grab without swallowing clicks well inside the selection.
+        let reach = HANDLE_SIZE / 2.0 + 2.0;
+        HANDLE_ORDER
+            .into_iter()
+            .zip(handle_positions(sel))
+            .find(|(_, pos)| (point - *pos).length() <= reach)
+            .map(|(handle, _)| handle)
     }
 
     /// Calculates exact screen bounds of the Horizontal and Vertical toolbars.
@@ -261,57 +324,88 @@ impl ZenShotApp {
     }
 }
 
-/// Draws the exact Lightshot toolbar background gradient derived from the DLL strip image.
-/// Gradient: top-highlight (250,251,251) -> body (237,240,243..211,214,217) -> shadow line.
-/// Clipped to a 3px-radius rounded rect, matches the original DLL 9-slice sprite exactly.
-fn paint_lightshot_toolbar(painter: &egui::Painter, rect: Rect) {
+/// Draws the toolbar chrome scanline by scanline, reproducing the 204x29 and
+/// 29x204 strips shipped in Lightshot.dll: a 1px translucent black frame, a
+/// (250,251,251) highlight row, a linear body fade to (211,214,217), then a
+/// two-row drop shadow. `vertical` runs the fade left-to-right instead.
+fn paint_lightshot_toolbar(painter: &egui::Painter, rect: Rect, vertical: bool) {
+    let extent = if vertical { rect.width() } else { rect.height() };
+    let rows = extent.round() as i32;
 
-    let r = 3.0_f32; // corner radius matches Lightshot
-    let h = rect.height();
-
-    // Draw gradient via per-pixel scanline approximation using small rects
-    // Lightshot body: y=1 -> highlight (250,251,251), y=3..25 linear to (211,214,217)
-    // Over our full height we scale linearly.
-    let n = h.ceil() as i32;
-    for row in 0..n {
-        let t = if n > 2 { row as f32 / (n - 2) as f32 } else { 0.0 };
-        let y0 = rect.min.y + row as f32;
-        let y1 = (y0 + 1.0).min(rect.max.y);
-
-        let color = if row == 0 {
-            // Top highlight strip
-            Color32::from_rgb(250, 251, 251)
-        } else if row >= n - 1 {
-            // Bottom shadow line
-            Color32::from_rgba_unmultiplied(0, 0, 0, 91)
+    for row in 0..rows {
+        let color = toolbar_scanline(row, rows);
+        let offset = row as f32;
+        let strip = if vertical {
+            Rect::from_min_max(
+                Pos2::new(rect.min.x + offset, rect.min.y),
+                Pos2::new((rect.min.x + offset + 1.0).min(rect.max.x), rect.max.y),
+            )
         } else {
-            // Linear gradient body
-            let tc = t.clamp(0.0, 1.0);
-            Color32::from_rgb(
-                lerp_u8(237, 211, tc),
-                lerp_u8(240, 214, tc),
-                lerp_u8(243, 217, tc),
+            Rect::from_min_max(
+                Pos2::new(rect.min.x, rect.min.y + offset),
+                Pos2::new(rect.max.x, (rect.min.y + offset + 1.0).min(rect.max.y)),
             )
         };
-
-        let strip = Rect::from_min_max(
-            Pos2::new(rect.min.x, y0),
-            Pos2::new(rect.max.x, y1),
-        );
-        // Use painter's clip to enforce rounded corners only on the final rect
         painter.rect_filled(strip, 0.0_f32, color);
     }
 
-    // Clip the gradient to rounded rect shape by overdrawing transparent corners
-    // (egui does not support gradient fills natively; the rect_filled above draws full-width strips,
-    //  so we restore rounded appearance with a transparent overlay pass)
-    let transparent = Color32::TRANSPARENT;
-    // Top-left and top-right corners: overdraw with the canvas bg at radius
-    let bg = Color32::TRANSPARENT; // egui composites on top of actual content behind
-    // Actually simpler: draw the rounded border ON TOP to enforce shape
-    // We already have the gradient; just add the thin outer border + shadow
-    painter.rect_stroke(rect, r, Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(170, 174, 178, 220)));
-    let _ = (transparent, bg); // suppress unused warnings
+    // Frame along the two edges the scanlines do not cover.
+    let (start, end) = if vertical {
+        (
+            [rect.left_top(), rect.right_top()],
+            [rect.left_bottom(), rect.right_bottom()],
+        )
+    } else {
+        (
+            [rect.left_top(), rect.left_bottom()],
+            [rect.right_top(), rect.right_bottom()],
+        )
+    };
+    painter.line_segment(start, Stroke::new(1.0_f32, TOOLBAR_FRAME));
+    painter.line_segment(end, Stroke::new(1.0_f32, TOOLBAR_FRAME));
+}
+
+const TOOLBAR_FRAME: Color32 = Color32::from_black_alpha(19);
+
+/// Colour of scanline `row` of a toolbar `rows` thick.
+///
+/// The body is not a single ramp: the strip falls from (245,247,248) to
+/// (232,236,239) over the first 8% and then eases to (211,214,217), which is
+/// what makes Lightshot's bars read as glossy rather than flat.
+fn toolbar_scanline(row: i32, rows: i32) -> Color32 {
+    const HIGHLIGHT: Color32 = Color32::from_rgb(250, 251, 251);
+    const BODY_TOP: (u8, u8, u8) = (245, 247, 248);
+    const BODY_KNEE: (u8, u8, u8) = (232, 236, 239);
+    const BODY_BOTTOM: (u8, u8, u8) = (211, 214, 217);
+    const KNEE_AT: f32 = 0.087;
+
+    match rows - row {
+        1 => return Color32::from_black_alpha(26),
+        2 => return Color32::from_black_alpha(91),
+        3 => return Color32::from_rgb(203, 206, 208),
+        _ => {}
+    }
+    if row == 0 {
+        return TOOLBAR_FRAME;
+    }
+    if row == 1 {
+        return HIGHLIGHT;
+    }
+
+    let body_rows = (rows - 5).max(1) as f32;
+    let t = ((row - 2) as f32 / body_rows).clamp(0.0, 1.0);
+
+    let (from, to, local) = if t <= KNEE_AT {
+        (BODY_TOP, BODY_KNEE, t / KNEE_AT)
+    } else {
+        (BODY_KNEE, BODY_BOTTOM, (t - KNEE_AT) / (1.0 - KNEE_AT))
+    };
+
+    Color32::from_rgb(
+        lerp_u8(from.0, to.0, local),
+        lerp_u8(from.1, to.1, local),
+        lerp_u8(from.2, to.2, local),
+    )
 }
 
 #[inline]
@@ -319,11 +413,40 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t).round() as u8
 }
 
-/// Creates an ImageButton styled to match Lightshot's transparent-background button.
-/// Lightshot buttons have NO visible frame; only a very subtle hover highlight.
+/// Creates an ImageButton styled to match Lightshot's toolbar button.
+/// The frame has to stay enabled: egui zeroes `button_padding` for frameless
+/// image buttons, which would shrink each button to its bare icon and leave the
+/// bar longer than its contents. `style_toolbar_buttons` makes the idle frame
+/// invisible instead.
 fn lightshot_btn(image: egui::Image<'static>) -> ImageButton<'static> {
-    ImageButton::new(image)
-        .frame(false) // no default egui button frame; we want transparent bg
+    ImageButton::new(image.rounding(2.0))
+}
+
+/// Lightshot's buttons are flat until hovered, then pick up a soft highlight
+/// with a thin border; the selected tool stays pressed in.
+fn style_toolbar_buttons(ui: &mut egui::Ui) {
+    ui.spacing_mut().button_padding = Vec2::splat(BTN_PAD);
+
+    let rounding = egui::Rounding::same(2.0);
+    let border = Color32::from_rgb(166, 178, 190);
+    let visuals = ui.visuals_mut();
+
+    visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+    visuals.widgets.inactive.bg_stroke = Stroke::NONE;
+    visuals.widgets.inactive.rounding = rounding;
+
+    visuals.widgets.hovered.weak_bg_fill = Color32::from_white_alpha(150);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, border);
+    visuals.widgets.hovered.rounding = rounding;
+    visuals.widgets.hovered.expansion = 0.0;
+
+    visuals.widgets.active.weak_bg_fill = Color32::from_black_alpha(26);
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, border);
+    visuals.widgets.active.rounding = rounding;
+    visuals.widgets.active.expansion = 0.0;
+
+    visuals.selection.bg_fill = Color32::from_black_alpha(30);
+    visuals.selection.stroke = Stroke::new(1.0_f32, border);
 }
 
 impl eframe::App for ZenShotApp {
@@ -614,12 +737,13 @@ impl eframe::App for ZenShotApp {
                 let painter = ui.painter();
 
                 if let Some(tex) = &self.texture {
-                    // Darkened desktop background
+                    // Darkened desktop background. Sampling Lightshot's overlay
+                    // shows white pixels land on 128, i.e. a flat 50% multiply.
                     painter.image(
                         tex.id(),
                         screen_rect,
                         Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                        Color32::from_rgba_unmultiplied(80, 80, 85, 255),
+                        Color32::from_rgb(128, 128, 128),
                     );
 
                     // Un-dimmed crystal-clear selection window
@@ -635,33 +759,30 @@ impl eframe::App for ZenShotApp {
 
                         painter.image(tex.id(), sel, Rect::from_min_max(uv_min, uv_max), Color32::WHITE);
 
-                        // Selection border: exact Lightshot blue (1px, sharp)
-                        painter.rect_stroke(sel, 0.0_f32, Stroke::new(1.0_f32, Color32::from_rgb(0, 174, 239)));
+                        paint_marching_ants(painter, sel);
 
-                        // 8 resize handles: 6x6 white squares with blue border (exact Lightshot look)
-                        let handle_positions = [
-                            sel.left_top(),
-                            Pos2::new(sel.center().x, sel.top()),
-                            sel.right_top(),
-                            Pos2::new(sel.right(), sel.center().y),
-                            sel.right_bottom(),
-                            Pos2::new(sel.center().x, sel.bottom()),
-                            sel.left_bottom(),
-                            Pos2::new(sel.left(), sel.center().y),
-                        ];
-                        for pos in handle_positions {
-                            let handle_rect = Rect::from_center_size(pos, Vec2::splat(6.0));
-                            painter.rect_filled(handle_rect, 0.0_f32, Color32::WHITE);
-                            painter.rect_stroke(handle_rect, 0.0_f32, Stroke::new(1.0_f32, Color32::from_rgb(0, 174, 239)));
+                        for pos in handle_positions(sel) {
+                            paint_handle(painter, pos);
                         }
 
-                        // Dimension badge: top-left corner, dark bg, white monospace text
-                        let dim_text = format!("{} x {}", sel.width().round() as i32, sel.height().round() as i32);
-                        let badge_pos = Pos2::new(sel.left(), (sel.top() - 22.0).max(4.0));
-                        let font_id = egui::FontId::monospace(11.0);
-                        let galley = painter.layout_no_wrap(dim_text, font_id, Color32::WHITE);
-                        let badge_rect = Rect::from_min_size(badge_pos, galley.size() + Vec2::new(8.0, 4.0));
-                        painter.rect_filled(badge_rect, 2.0_f32, Color32::from_black_alpha(220));
+                        // Dimension badge, sitting just above the top-left corner.
+                        let dim_text = format!(
+                            "{}x{}",
+                            sel.width().round() as i32,
+                            sel.height().round() as i32
+                        );
+                        let galley = painter.layout_no_wrap(
+                            dim_text,
+                            egui::FontId::proportional(BADGE_FONT_SIZE),
+                            Color32::WHITE,
+                        );
+                        let badge_size = galley.size() + Vec2::new(8.0, 4.0);
+                        let badge_pos = Pos2::new(
+                            sel.left(),
+                            (sel.top() - badge_size.y - 3.0).max(0.0),
+                        );
+                        let badge_rect = Rect::from_min_size(badge_pos, badge_size);
+                        painter.rect_filled(badge_rect, 0.0_f32, BADGE_BACKDROP);
                         painter.galley(badge_pos + Vec2::new(4.0, 2.0), galley, Color32::WHITE);
                     }
                 }
@@ -748,12 +869,12 @@ impl ZenShotApp {
         // --- 1. HORIZONTAL ACTION TOOLBAR (Bottom) ---
         // Draw with painter for exact Lightshot gradient (250,251,251) -> (211,214,217) + shadow
         let h_btn_size = H_ICON;
-        paint_lightshot_toolbar(ui.painter(), h_rect);
+        paint_lightshot_toolbar(ui.painter(), h_rect, false);
         let h_builder = egui::UiBuilder::new().max_rect(h_rect.shrink(BAR_MARGIN));
         ui.allocate_new_ui(h_builder, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(BTN_GAP, 0.0);
-                ui.spacing_mut().button_padding = Vec2::splat(BTN_PAD);
+                style_toolbar_buttons(ui);
 
                 if let Some(icons) = &self.icons {
                     if ui.add(lightshot_btn(egui::Image::new(&icons.print).fit_to_exact_size(h_btn_size))).on_hover_text("Print (Ctrl+P)").clicked() {
@@ -774,12 +895,12 @@ impl ZenShotApp {
 
         // --- 2. VERTICAL DRAWING TOOLBAR (Right) ---
         let v_btn_size = V_ICON;
-        paint_lightshot_toolbar(ui.painter(), v_rect);
+        paint_lightshot_toolbar(ui.painter(), v_rect, true);
         let v_builder = egui::UiBuilder::new().max_rect(v_rect.shrink(BAR_MARGIN));
         ui.allocate_new_ui(v_builder, |ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(0.0, BTN_GAP);
-                ui.spacing_mut().button_padding = Vec2::splat(BTN_PAD);
+                style_toolbar_buttons(ui);
 
                 if let Some(icons) = &self.icons {
                     let btn = lightshot_btn(egui::Image::new(&icons.pen).fit_to_exact_size(v_btn_size)).selected(current_tool == Tool::Pen);
@@ -812,10 +933,17 @@ impl ZenShotApp {
                         action = ToolbarAction::SelectTool(if current_tool == Tool::Text { Tool::Select } else { Tool::Text });
                     }
 
-                    // Color swatch: exact Lightshot style
-                    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(20.0), egui::Sense::click());
-                    ui.painter().rect_filled(rect, 2.0_f32, current_color);
-                    ui.painter().rect_stroke(rect, 2.0_f32, Stroke::new(1.0_f32, Color32::from_rgb(90, 90, 100)));
+                    // Colour swatch: a filled chip inset in a button-sized cell so
+                    // it lines up with the icons above and below it.
+                    let cell = v_btn_size + Vec2::splat(2.0 * BTN_PAD);
+                    let (rect, resp) = ui.allocate_exact_size(cell, egui::Sense::click());
+                    let chip = Rect::from_center_size(rect.center(), Vec2::splat(12.0));
+                    ui.painter().rect_filled(chip, 1.0_f32, current_color);
+                    ui.painter().rect_stroke(
+                        chip,
+                        1.0_f32,
+                        Stroke::new(1.0_f32, Color32::from_black_alpha(80)),
+                    );
                     if resp.on_hover_text("Color (click to cycle)").clicked() {
                         action = ToolbarAction::CycleColor;
                     }
@@ -1239,6 +1367,35 @@ mod tests {
 
         let painted = cropped.pixels().filter(|p| p.0[0] > 0).count();
         assert!(painted > 0, "text annotation was not burned into the image");
+    }
+
+    /// Scanline colours sampled from the 204x29 toolbar strip inside
+    /// Lightshot.dll, so the hand-rolled gradient cannot drift away from it.
+    #[test]
+    fn test_toolbar_gradient_matches_lightshot_strip() {
+        let expected: [(i32, [u8; 3]); 9] = [
+            (1, [250, 251, 251]),
+            (2, [245, 247, 248]),
+            (3, [237, 240, 243]),
+            (4, [232, 236, 239]),
+            (10, [226, 230, 233]),
+            (15, [220, 224, 227]),
+            (18, [217, 221, 223]),
+            (25, [211, 214, 217]),
+            (26, [203, 206, 208]),
+        ];
+
+        for (row, want) in expected {
+            let got = toolbar_scanline(row, 29);
+            let got = [got.r(), got.g(), got.b()];
+            for channel in 0..3 {
+                let delta = got[channel].abs_diff(want[channel]);
+                assert!(
+                    delta <= 2,
+                    "row {row} channel {channel}: got {got:?}, want {want:?}"
+                );
+            }
+        }
     }
 
     /// Fonts are only available after the context has run a frame.
