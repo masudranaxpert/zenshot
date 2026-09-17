@@ -89,6 +89,7 @@ fn apply_theme(ctx: &egui::Context) {
     v.extreme_bg_color = Color32::WHITE; // text-field interior
     v.selection.bg_fill = ACCENT_SOFT;
     v.selection.stroke = Stroke::new(1.0_f32, ACCENT);
+    v.slider_trailing_fill = true;
 
     for state in [
         &mut v.widgets.inactive,
@@ -457,8 +458,8 @@ impl OptionsApp {
     }
 
     fn ui_formats(&mut self, ui: &mut egui::Ui) {
-        card(ui, "Output", |ui| {
-            field_label(ui, "Save using the format");
+        card(ui, "Image Format", |ui| {
+            field_label(ui, "Default export format");
             ui.add_space(2.0);
             segmented(
                 ui,
@@ -468,28 +469,66 @@ impl OptionsApp {
                 ],
                 &mut self.config.output_format,
             );
-            ui.add_space(10.0);
-            ui.add_enabled_ui(self.config.output_format == OutputFormat::Jpeg, |ui| {
-                field_label(ui, "JPEG quality");
+            ui.add_space(6.0);
+            let format_desc = match self.config.output_format {
+                OutputFormat::Png => "Lossless quality. Best for text, code, and graphics.",
+                OutputFormat::Jpeg => "Compressed file size with adjustable quality. Best for photos.",
+            };
+            ui.label(RichText::new(format_desc).size(11.5).color(INK_MUTED));
+
+            ui.add_space(14.0);
+            let is_jpeg = self.config.output_format == OutputFormat::Jpeg;
+            ui.add_enabled_ui(is_jpeg, |ui| {
+                let q = self.config.jpeg_quality;
+                let hint = quality_hint(q);
                 ui.horizontal(|ui| {
-                    let slider_width = (ui.available_width() - 52.0).max(120.0);
-                    ui.add_sized(
-                        [slider_width, 16.0],
-                        egui::Slider::new(&mut self.config.jpeg_quality, 10..=100)
-                            .show_value(false),
+                    ui.label(
+                        RichText::new("JPEG Quality")
+                            .size(12.0)
+                            .color(if is_jpeg { INK_MUTED } else { Color32::from_rgb(180, 186, 192) }),
                     );
-                    let mut q = self.config.jpeg_quality as i32;
-                    if ui
-                        .add(
-                            egui::DragValue::new(&mut q)
-                                .range(10..=100)
-                                .speed(1.0)
-                                .suffix("%"),
-                        )
-                        .changed()
-                    {
-                        self.config.jpeg_quality = q as u8;
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(hint).size(11.5).color(INK_MUTED));
+                    });
+                });
+                ui.add_space(4.0);
+
+                ui.scope(|ui| {
+                    let v = ui.visuals_mut();
+                    v.slider_trailing_fill = true;
+                    v.selection.bg_fill = ACCENT;
+                    v.widgets.inactive.bg_fill = Color32::from_rgb(222, 226, 230);
+                    v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(210, 215, 220));
+                    v.widgets.hovered.bg_fill = Color32::from_rgb(212, 217, 223);
+
+                    let available = ui.available_width();
+                    let input_width = 56.0;
+                    let slider_width = (available - input_width - 12.0).max(100.0);
+
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().slider_width = slider_width;
+                        ui.spacing_mut().slider_rail_height = 6.0;
+
+                        ui.add(
+                            egui::Slider::new(&mut self.config.jpeg_quality, 10..=100)
+                                .show_value(false)
+                                .trailing_fill(true),
+                        );
+
+                        let mut q_int = self.config.jpeg_quality as i32;
+                        if ui
+                            .add_sized(
+                                [input_width, 22.0],
+                                egui::DragValue::new(&mut q_int)
+                                    .range(10..=100)
+                                    .speed(1.0)
+                                    .suffix("%"),
+                            )
+                            .changed()
+                        {
+                            self.config.jpeg_quality = q_int as u8;
+                        }
+                    });
                 });
             });
         });
@@ -683,4 +722,36 @@ fn read_binding(ctx: &egui::Context) -> Option<Hotkey> {
             None
         }
     })
+}
+
+pub(crate) fn quality_hint(q: u8) -> &'static str {
+    match q {
+        90..=100 => "Maximum quality (larger file)",
+        75..=89 => "High quality (recommended)",
+        50..=74 => "Balanced compression",
+        _ => "Smaller file size (lower quality)",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quality_hint_maps_ranges_appropriately() {
+        assert_eq!(quality_hint(100), "Maximum quality (larger file)");
+        assert_eq!(quality_hint(90), "Maximum quality (larger file)");
+        assert_eq!(quality_hint(89), "High quality (recommended)");
+        assert_eq!(quality_hint(75), "High quality (recommended)");
+        assert_eq!(quality_hint(74), "Balanced compression");
+        assert_eq!(quality_hint(50), "Balanced compression");
+        assert_eq!(quality_hint(49), "Smaller file size (lower quality)");
+        assert_eq!(quality_hint(10), "Smaller file size (lower quality)");
+    }
+
+    #[test]
+    fn strftime_validator_detects_bad_specifiers() {
+        assert_eq!(unsupported_strftime("%Y-%m-%d"), None);
+        assert_eq!(unsupported_strftime("%Y-%q-%d"), Some('q'));
+    }
 }

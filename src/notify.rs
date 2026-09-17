@@ -63,7 +63,7 @@ fn windows_tell(body: &str) {
             0,
             &cds as *const COPYDATASTRUCT as isize,
             SMTO_ABORTIFHUNG,
-            600,
+            40,
             std::ptr::null_mut(),
         );
     }

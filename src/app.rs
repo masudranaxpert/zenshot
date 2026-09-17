@@ -307,6 +307,7 @@ pub struct ZenShotApp {
     active_text_pos: Option<Pos2>,
     last_pointer: Pos2,
     export_error: Option<String>,
+    vanished: bool,
     /// Drop the GDI freeze-frame only after the GL overlay has presented.
     #[cfg(windows)]
     cover: Option<crate::cover::FrozenDesktop>,
@@ -347,6 +348,7 @@ impl ZenShotApp {
             active_text_pos: None,
             last_pointer: Pos2::ZERO,
             export_error: None,
+            vanished: false,
             #[cfg(windows)]
             cover: None,
             #[cfg(windows)]
@@ -363,6 +365,10 @@ impl ZenShotApp {
     /// Hide the overlay immediately — before crop/clipboard — so Copy/Esc
     /// feels like Lightshot (the select area is gone, then work happens).
     fn vanish(&mut self, ctx: &egui::Context) {
+        if self.vanished {
+            return;
+        }
+        self.vanished = true;
         #[cfg(windows)]
         {
             crate::cover::hide_overlay_windows();
@@ -372,6 +378,7 @@ impl ZenShotApp {
     }
 
     fn restore(&mut self, ctx: &egui::Context) {
+        self.vanished = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         #[cfg(windows)]
         crate::cover::show_overlay_windows();

@@ -4,6 +4,7 @@
 
 use std::mem;
 use std::ptr;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Mutex;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -167,6 +168,23 @@ fn cleanup_paint() {
     }
 }
 
+static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
+
+fn get_overlay_hwnd() -> HWND {
+    let cached = OVERLAY_HWND.load(Ordering::Relaxed) as HWND;
+    if !cached.is_null() {
+        return cached;
+    }
+    unsafe {
+        let title = wide("ZenShot");
+        let hwnd = FindWindowW(ptr::null(), title.as_ptr());
+        if !hwnd.is_null() {
+            OVERLAY_HWND.store(hwnd as isize, Ordering::Relaxed);
+        }
+        hwnd
+    }
+}
+
 /// eframe 0.29 shows its window before the first buffer swap. Cloaking keeps
 /// that incomplete surface out of composition without stopping its rendering.
 pub fn prepare_overlay() {
@@ -174,8 +192,7 @@ pub fn prepare_overlay() {
         use windows_sys::Win32::Graphics::Dwm::{
             DwmSetWindowAttribute, DWMWA_CLOAK, DWMWA_TRANSITIONS_FORCEDISABLED,
         };
-        let title = wide("ZenShot");
-        let hwnd = FindWindowW(ptr::null(), title.as_ptr());
+        let hwnd = get_overlay_hwnd();
         if !hwnd.is_null() {
             let enabled = 1i32;
             for attribute in [DWMWA_TRANSITIONS_FORCEDISABLED, DWMWA_CLOAK] {
@@ -190,8 +207,7 @@ pub fn prepare_overlay() {
 pub fn reveal_overlay() {
     unsafe {
         use windows_sys::Win32::Graphics::Dwm::{DwmFlush, DwmSetWindowAttribute, DWMWA_CLOAK};
-        let title = wide("ZenShot");
-        let hwnd = FindWindowW(ptr::null(), title.as_ptr());
+        let hwnd = get_overlay_hwnd();
         if !hwnd.is_null() {
             let disabled = 0i32;
             let _ = DwmSetWindowAttribute(hwnd, DWMWA_CLOAK as u32,
@@ -205,9 +221,13 @@ pub fn reveal_overlay() {
 /// Hide the overlay the same frame Copy/Esc is pressed, before crop/clipboard work.
 pub fn hide_overlay_windows() {
     unsafe {
-        let title = wide("ZenShot");
-        let gl = FindWindowW(ptr::null(), title.as_ptr());
+        use windows_sys::Win32::Graphics::Dwm::{DwmFlush, DwmSetWindowAttribute, DWMWA_CLOAK};
+        let gl = get_overlay_hwnd();
         if !gl.is_null() {
+            // Instantly cloak so DWM drops the overlay in 0ms without teardown stutter
+            let enabled = 1i32;
+            let _ = DwmSetWindowAttribute(gl, DWMWA_CLOAK as u32,
+                (&enabled as *const i32).cast(), mem::size_of_val(&enabled) as u32);
             ShowWindow(gl, SW_HIDE);
         }
         let class = wide(CLASS);
@@ -216,19 +236,21 @@ pub fn hide_overlay_windows() {
             ShowWindow(cover, SW_HIDE);
         }
         SetCursor(LoadCursorW(ptr::null_mut(), IDC_ARROW));
-        // Keep the GL surface alive until DWM has composed the hidden window.
-        // Exiting immediately after SW_HIDE can otherwise expose its teardown.
-        let _ = windows_sys::Win32::Graphics::Dwm::DwmFlush();
+        let _ = DwmFlush();
     }
 }
 
 pub fn show_overlay_windows() {
     unsafe {
-        let title = wide("ZenShot");
-        let gl = FindWindowW(ptr::null(), title.as_ptr());
+        use windows_sys::Win32::Graphics::Dwm::{DwmFlush, DwmSetWindowAttribute, DWMWA_CLOAK};
+        let gl = get_overlay_hwnd();
         if !gl.is_null() {
+            let disabled = 0i32;
+            let _ = DwmSetWindowAttribute(gl, DWMWA_CLOAK as u32,
+                (&disabled as *const i32).cast(), mem::size_of_val(&disabled) as u32);
             ShowWindow(gl, SW_SHOW);
             SetForegroundWindow(gl);
+            let _ = DwmFlush();
         }
         SetCursor(LoadCursorW(ptr::null_mut(), IDC_CROSS));
     }
