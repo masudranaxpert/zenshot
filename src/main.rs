@@ -119,11 +119,12 @@ fn run_capture() -> eframe::Result<()> {
     )
 }
 
-fn overlay_native_options(_screen_image: &image::RgbaImage) -> eframe::NativeOptions {
+fn overlay_native_options(screen_image: &image::RgbaImage) -> eframe::NativeOptions {
     let scale = display_scale_factor().max(1.0);
 
     #[cfg(windows)]
     let (origin_x, origin_y, width, height) = {
+        let _ = screen_image;
         let (vx, vy, vw, vh) = capture::virtual_screen_bounds();
         (vx as f32, vy as f32, vw as f32, vh as f32)
     };
