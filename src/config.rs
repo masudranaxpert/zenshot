@@ -140,22 +140,56 @@ impl Config {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let serialized = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
-        fs::write(&path, serialized).map_err(|e| e.to_string())
+        let tmp = path.with_extension("toml.tmp");
+        fs::write(&tmp, serialized).map_err(|e| e.to_string())?;
+        replace_file(&tmp, &path).map_err(|e| e.to_string())
+    }
+
+    /// Persist only the last overlay rectangle so this process cannot clobber
+    /// Options that were saved while the overlay was already open.
+    pub fn persist_last_selection(last: [f32; 4]) -> Result<(), String> {
+        let mut fresh = Self::load_or_default();
+        if !fresh.keep_selection {
+            return Ok(());
+        }
+        fresh.last_selection = Some(last);
+        fresh.save()
     }
 
     pub fn resolve_save_dir(&self) -> PathBuf {
-        let path_str = &self.save_dir;
-        if path_str.starts_with('~') {
-            if let Some(home) = dirs::home_dir() {
-                return home.join(path_str.trim_start_matches("~/").trim_start_matches('~'));
-            }
-        }
-        PathBuf::from(path_str)
+        expand_home(&self.save_dir)
     }
 
     pub fn jpeg_quality_clamped(&self) -> u8 {
         self.jpeg_quality.clamp(10, 100)
     }
+}
+
+fn replace_file(tmp: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    match fs::rename(tmp, dest) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            let _ = fs::remove_file(dest);
+            fs::rename(tmp, dest)
+        }
+    }
+}
+
+/// `~/foo` and `~\foo` both mean `$HOME/foo`. A leading `~` without a
+/// separator is left alone so Windows drive-ish paths are not eaten.
+pub(crate) fn expand_home(path_str: &str) -> PathBuf {
+    if path_str == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+    }
+    let rest = path_str
+        .strip_prefix("~/")
+        .or_else(|| path_str.strip_prefix("~\\"));
+    if let Some(rest) = rest {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(path_str)
 }
 
 #[cfg(test)]
@@ -175,5 +209,19 @@ stroke_thickness = 2.0
         assert!(cfg.autostart);
         assert_eq!(cfg.hotkey_capture, Hotkey::PRINT_SCREEN);
         assert_eq!(cfg.output_format, OutputFormat::Png);
+    }
+
+    #[test]
+    fn tilde_backslash_expands_on_windows_style_paths() {
+        let expanded = expand_home(r"~\Pictures\Screenshots");
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(expanded, home.join(r"Pictures\Screenshots"));
+        }
+        assert_eq!(expand_home(r"C:\shots"), PathBuf::from(r"C:\shots"));
+        assert_eq!(expand_home("~/Pictures"), {
+            dirs::home_dir()
+                .map(|h| h.join("Pictures"))
+                .unwrap_or_else(|| PathBuf::from("~/Pictures"))
+        });
     }
 }

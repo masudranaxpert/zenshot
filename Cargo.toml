@@ -1,6 +1,6 @@
 [package]
 name = "zenshot"
-version = "2.7.0"
+version = "2.8.0"
 edition = "2021"
 authors = ["Masud Rana <masudranaxpert@gmail.com>"]
 description = "Ultra-fast, featherlight cross-platform screen capture tool with zero disk I/O"
@@ -21,6 +21,7 @@ webbrowser = "1.0"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_System_Console",

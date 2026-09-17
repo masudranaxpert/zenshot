@@ -97,11 +97,11 @@ impl FrozenDesktop {
             }
 
             let dest = std::slice::from_raw_parts_mut(bits as *mut u8, expected);
-            // Same 50% multiply Lightshot uses on the frozen desktop.
+            // Match egui_glow's gamma-space 128/255 texture tint exactly.
             for (out, src) in dest.chunks_exact_mut(4).zip(bgra.chunks_exact(4)) {
-                out[0] = src[0] / 2;
-                out[1] = src[1] / 2;
-                out[2] = src[2] / 2;
+                out[0] = ((src[0] as u16 * 128 + 127) / 255) as u8;
+                out[1] = ((src[1] as u16 * 128 + 127) / 255) as u8;
+                out[2] = ((src[2] as u16 * 128 + 127) / 255) as u8;
                 out[3] = 255;
             }
 
@@ -167,6 +167,41 @@ fn cleanup_paint() {
     }
 }
 
+/// eframe 0.29 shows its window before the first buffer swap. Cloaking keeps
+/// that incomplete surface out of composition without stopping its rendering.
+pub fn prepare_overlay() {
+    unsafe {
+        use windows_sys::Win32::Graphics::Dwm::{
+            DwmSetWindowAttribute, DWMWA_CLOAK, DWMWA_TRANSITIONS_FORCEDISABLED,
+        };
+        let title = wide("ZenShot");
+        let hwnd = FindWindowW(ptr::null(), title.as_ptr());
+        if !hwnd.is_null() {
+            let enabled = 1i32;
+            for attribute in [DWMWA_TRANSITIONS_FORCEDISABLED, DWMWA_CLOAK] {
+                let _ = DwmSetWindowAttribute(hwnd, attribute as u32,
+                    (&enabled as *const i32).cast(), mem::size_of_val(&enabled) as u32);
+            }
+        }
+    }
+}
+
+/// Called on the update following the first swap, while the GDI cover is alive.
+pub fn reveal_overlay() {
+    unsafe {
+        use windows_sys::Win32::Graphics::Dwm::{DwmFlush, DwmSetWindowAttribute, DWMWA_CLOAK};
+        let title = wide("ZenShot");
+        let hwnd = FindWindowW(ptr::null(), title.as_ptr());
+        if !hwnd.is_null() {
+            let disabled = 0i32;
+            let _ = DwmSetWindowAttribute(hwnd, DWMWA_CLOAK as u32,
+                (&disabled as *const i32).cast(), mem::size_of_val(&disabled) as u32);
+            let _ = DwmFlush();
+            SetForegroundWindow(hwnd);
+        }
+    }
+}
+
 /// Hide the overlay the same frame Copy/Esc is pressed, before crop/clipboard work.
 pub fn hide_overlay_windows() {
     unsafe {
@@ -181,6 +216,21 @@ pub fn hide_overlay_windows() {
             ShowWindow(cover, SW_HIDE);
         }
         SetCursor(LoadCursorW(ptr::null_mut(), IDC_ARROW));
+        // Keep the GL surface alive until DWM has composed the hidden window.
+        // Exiting immediately after SW_HIDE can otherwise expose its teardown.
+        let _ = windows_sys::Win32::Graphics::Dwm::DwmFlush();
+    }
+}
+
+pub fn show_overlay_windows() {
+    unsafe {
+        let title = wide("ZenShot");
+        let gl = FindWindowW(ptr::null(), title.as_ptr());
+        if !gl.is_null() {
+            ShowWindow(gl, SW_SHOW);
+            SetForegroundWindow(gl);
+        }
+        SetCursor(LoadCursorW(ptr::null_mut(), IDC_CROSS));
     }
 }
 

@@ -97,6 +97,8 @@ fn run_capture() -> eframe::Result<()> {
         "ZenShot",
         native_options,
         Box::new(move |cc| {
+            #[cfg(windows)]
+            crate::cover::prepare_overlay();
             let mut app = ZenShotApp::new(config, screen_image, &cc.egui_ctx);
             #[cfg(windows)]
             {
@@ -129,15 +131,28 @@ fn overlay_native_options(screen_image: &image::RgbaImage) -> eframe::NativeOpti
 }
 
 fn overlay_logical_size(physical_w: f32, physical_h: f32) -> (f32, f32) {
+    let scale = display_scale_factor().max(1.0);
+    (physical_w / scale, physical_h / scale)
+}
+
+fn display_scale_factor() -> f32 {
     #[cfg(windows)]
     {
-        let scale = (unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() } as f32 / 96.0)
-            .max(1.0);
-        (physical_w / scale, physical_h / scale)
+        (unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() } as f32 / 96.0).max(1.0)
     }
     #[cfg(not(windows))]
     {
-        (physical_w, physical_h)
+        let Ok(monitors) = xcap::Monitor::all() else {
+            return 1.0;
+        };
+        let monitor = monitors
+            .iter()
+            .find(|m| m.is_primary().unwrap_or(false))
+            .or_else(|| monitors.first());
+        monitor
+            .and_then(|m| m.scale_factor().ok())
+            .unwrap_or(1.0)
+            .max(1.0)
     }
 }
 

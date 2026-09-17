@@ -100,6 +100,123 @@ fn bar_length(n: f32, icon: f32) -> f32 {
     n * (icon + 2.0 * BTN_PAD) + (n - 1.0) * BTN_GAP + 2.0 * BAR_MARGIN
 }
 
+const TOOLBAR_GAP: f32 = 4.0;
+
+/// Screen region the floating bars may occupy. On Windows this is the monitor
+/// work area (above the taskbar); everywhere else, a small inset from the overlay.
+fn toolbar_safe_bounds(screen: Rect) -> Rect {
+    let inset = screen.shrink(TOOLBAR_GAP);
+    #[cfg(windows)]
+    {
+        if let Some(work) = windows_work_area_points() {
+            let clipped = work.intersect(inset);
+            if clipped.width() >= BAR_THICKNESS && clipped.height() >= BAR_THICKNESS {
+                return clipped;
+            }
+        }
+    }
+    inset
+}
+
+#[cfg(windows)]
+fn windows_work_area_points() -> Option<Rect> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
+
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let ok = unsafe {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, (&mut rc as *mut RECT).cast(), 0)
+    };
+    if ok == 0 || rc.right <= rc.left || rc.bottom <= rc.top {
+        return None;
+    }
+    let dpi = (unsafe { GetDpiForSystem() } as f32 / 96.0).max(1.0);
+    Some(Rect::from_min_max(
+        Pos2::new(rc.left as f32 / dpi, rc.top as f32 / dpi),
+        Pos2::new(rc.right as f32 / dpi, rc.bottom as f32 / dpi),
+    ))
+}
+
+fn clamp_pos(v: f32, lo: f32, hi: f32) -> f32 {
+    if lo <= hi {
+        v.clamp(lo, hi)
+    } else {
+        lo
+    }
+}
+
+/// Prefer `outside_a`, then `outside_b`, then `inside`, all clamped to `[lo, hi]`.
+fn place_axis(outside_a: f32, outside_b: f32, inside: f32, lo: f32, hi: f32) -> f32 {
+    if outside_a >= lo && outside_a <= hi {
+        outside_a
+    } else if outside_b >= lo && outside_b <= hi {
+        outside_b
+    } else {
+        clamp_pos(inside, lo, hi)
+    }
+}
+
+/// Places the action (horizontal) and tool (vertical) bars around `sel`, staying
+/// inside `safe`. Full-screen grabs have no outside room, so the bars sit in the
+/// bottom-right as an L: tools on the right, actions to their left.
+fn layout_toolbars(sel: Rect, safe: Rect) -> (Rect, Rect) {
+    let h_size = Vec2::new(bar_length(H_ACTION_COUNT, H_ICON.x), BAR_THICKNESS);
+    let v_size = Vec2::new(BAR_THICKNESS, bar_length(V_TOOL_COUNT, V_ICON.y));
+
+    let v_x = place_axis(
+        sel.right() + TOOLBAR_GAP,
+        sel.left() - TOOLBAR_GAP - v_size.x,
+        sel.right() - TOOLBAR_GAP - v_size.x,
+        safe.left(),
+        safe.right() - v_size.x,
+    );
+    let v_y = clamp_pos(sel.bottom() - v_size.y, safe.top(), safe.bottom() - v_size.y);
+    let v_rect = Rect::from_min_size(Pos2::new(v_x, v_y), v_size);
+
+    let h_y = place_axis(
+        sel.bottom() + TOOLBAR_GAP,
+        sel.top() - TOOLBAR_GAP - h_size.y,
+        sel.bottom() - TOOLBAR_GAP - h_size.y,
+        safe.top(),
+        safe.bottom() - h_size.y,
+    );
+    let h_x = clamp_pos(sel.right() - h_size.x, safe.left(), safe.right() - h_size.x);
+    let mut h_rect = Rect::from_min_size(Pos2::new(h_x, h_y), h_size);
+
+    if h_rect.intersects(v_rect) {
+        let left_of_v = v_rect.left() - TOOLBAR_GAP - h_size.x;
+        if left_of_v >= safe.left() {
+            h_rect = Rect::from_min_size(Pos2::new(left_of_v, h_y), h_size);
+        } else {
+            let above = v_rect.top() - TOOLBAR_GAP - h_size.y;
+            let y = if above >= safe.top() {
+                above
+            } else {
+                clamp_pos(
+                    v_rect.bottom() + TOOLBAR_GAP,
+                    safe.top(),
+                    safe.bottom() - h_size.y,
+                )
+            };
+            h_rect = Rect::from_min_size(
+                Pos2::new(
+                    clamp_pos(v_rect.right() - h_size.x, safe.left(), safe.right() - h_size.x),
+                    y,
+                ),
+                h_size,
+            );
+        }
+    }
+
+    (h_rect, v_rect)
+}
+
 /// Selection chrome, measured from Lightshot's own overlay: the outline is a
 /// 1px marching-ants pattern of three black then three white pixels, the eight
 /// grips are 6x6 black squares ringed in white, and the size badge is black at
@@ -189,6 +306,7 @@ pub struct ZenShotApp {
     text_input: String,
     active_text_pos: Option<Pos2>,
     last_pointer: Pos2,
+    export_error: Option<String>,
     /// Drop the GDI freeze-frame only after the GL overlay has presented.
     #[cfg(windows)]
     cover: Option<crate::cover::FrozenDesktop>,
@@ -228,6 +346,7 @@ impl ZenShotApp {
             text_input: String::new(),
             active_text_pos: None,
             last_pointer: Pos2::ZERO,
+            export_error: None,
             #[cfg(windows)]
             cover: None,
             #[cfg(windows)]
@@ -250,6 +369,34 @@ impl ZenShotApp {
             self.cover = None;
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+    }
+
+    fn restore(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        #[cfg(windows)]
+        crate::cover::show_overlay_windows();
+    }
+
+    fn fail_export(&mut self, ctx: &egui::Context, err: String) {
+        self.export_error = Some(err);
+        self.restore(ctx);
+    }
+
+    /// Text is only pushed into `annotations` on Enter. Export from the
+    /// toolbar must commit whatever is still in the inline editor first.
+    fn commit_pending_text(&mut self) {
+        let Some(pos) = self.active_text_pos.take() else {
+            return;
+        };
+        let text = std::mem::take(&mut self.text_input);
+        if !text.trim().is_empty() {
+            self.annotations.push(Annotation::Text {
+                pos,
+                text,
+                color: self.current_color(),
+                size: 16.0,
+            });
+        }
     }
 
     /// A hidden window stops pumping events, so a queued `Close` may never be
@@ -281,8 +428,9 @@ impl ZenShotApp {
             return;
         }
         if let Some(sel) = self.selection {
-            self.config.last_selection = Some([sel.min.x, sel.min.y, sel.width(), sel.height()]);
-            let _ = self.config.save();
+            let last = [sel.min.x, sel.min.y, sel.width(), sel.height()];
+            self.config.last_selection = Some(last);
+            let _ = Config::persist_last_selection(last);
         }
     }
 
@@ -292,20 +440,22 @@ impl ZenShotApp {
         if self.selection.is_none() {
             return;
         }
+        self.commit_pending_text();
         self.vanish(ctx);
         let Some(img) = self.crop_current_selection(ctx, screen_rect) else {
+            self.fail_export(ctx, "Nothing to save".into());
             return;
         };
-        self.remember_selection();
         match crate::export::save_image(&img, &self.config) {
             Ok(path) => {
+                self.remember_selection();
                 if self.config.show_notifications {
                     crate::notify::saved(&path);
                 }
+                self.quit(ctx);
             }
-            Err(err) => eprintln!("Save failed: {err}"),
+            Err(err) => self.fail_export(ctx, err),
         }
-        self.quit(ctx);
     }
 
     /// Copies cropped image directly to clipboard in RAM and exits immediately.
@@ -313,20 +463,22 @@ impl ZenShotApp {
         if self.selection.is_none() {
             return;
         }
+        self.commit_pending_text();
         self.vanish(ctx);
         let Some(img) = self.crop_current_selection(ctx, screen_rect) else {
+            self.fail_export(ctx, "Nothing to copy".into());
             return;
         };
-        self.remember_selection();
         match copy_to_clipboard(&img) {
             Ok(()) => {
+                self.remember_selection();
                 if self.config.show_notifications {
                     crate::notify::copied();
                 }
+                self.quit(ctx);
             }
-            Err(err) => eprintln!("{err}"),
+            Err(err) => self.fail_export(ctx, err),
         }
-        self.quit(ctx);
     }
 
     /// Hands the cropped image to the system printer and exits.
@@ -336,15 +488,21 @@ impl ZenShotApp {
         if self.selection.is_none() {
             return;
         }
+        self.commit_pending_text();
         self.vanish(ctx);
         let Some(img) = self.crop_current_selection(ctx, screen_rect) else {
+            self.fail_export(ctx, "Nothing to print".into());
             return;
         };
         let path = std::env::temp_dir().join(format!("zenshot_print_{}.png", std::process::id()));
-        if img.save(&path).is_ok() {
-            let _ = spawn_print_job(&path);
+        if let Err(err) = img.save(&path) {
+            self.fail_export(ctx, format!("Print failed: {err}"));
+            return;
         }
-        self.quit(ctx);
+        match spawn_print_job(&path) {
+            Ok(()) => self.quit(ctx),
+            Err(err) => self.fail_export(ctx, format!("Print failed: {err}")),
+        }
     }
 
     /// Checks if mouse point hits any of the 8 selection handles.
@@ -372,38 +530,7 @@ impl ZenShotApp {
 
     /// Calculates exact screen bounds of the Horizontal and Vertical toolbars.
     fn get_toolbar_rects(&self, sel: Rect, screen_rect: Rect) -> (Rect, Rect) {
-        let h_width = bar_length(H_ACTION_COUNT, H_ICON.x);
-        let h_height = BAR_THICKNESS;
-
-        let mut h_x = sel.right() - h_width;
-        if h_x < screen_rect.left() + 4.0 {
-            h_x = screen_rect.left() + 4.0;
-        }
-
-        let mut h_y = sel.bottom() + 4.0;
-        if h_y + h_height > screen_rect.bottom() - 4.0 {
-            h_y = sel.bottom() - h_height - 4.0;
-        }
-
-        let h_rect = Rect::from_min_size(Pos2::new(h_x, h_y), Vec2::new(h_width, h_height));
-
-        // Vertical toolbar: 8 drawing tools (Pen, Line, Arrow, Rect, Marker, Text, Color, Undo)
-        let v_width = BAR_THICKNESS;
-        let v_height = bar_length(V_TOOL_COUNT, V_ICON.y);
-
-        let mut v_x = sel.right() + 4.0;
-        if v_x + v_width > screen_rect.right() - 4.0 {
-            v_x = sel.right() - v_width - 4.0;
-        }
-
-        let mut v_y = sel.bottom() - v_height;
-        if v_y < screen_rect.top() + 4.0 {
-            v_y = screen_rect.top() + 4.0;
-        }
-
-        let v_rect = Rect::from_min_size(Pos2::new(v_x, v_y), Vec2::new(v_width, v_height));
-
-        (h_rect, v_rect)
+        layout_toolbars(sel, toolbar_safe_bounds(screen_rect))
     }
 }
 
@@ -527,6 +654,11 @@ fn icon_button(ui: &mut egui::Ui, icon: &IconPair, size: Vec2, active: bool, tip
 impl eframe::App for ZenShotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let screen_rect = ctx.screen_rect();
+        if matches!(self.drag_state, DragState::None) {
+            if let Some(sel) = self.selection {
+                self.selection = Some(constrain_to_screen(sel, screen_rect));
+            }
+        }
 
         // 2. Global hotkeys. The accelerator strings in Lightshot.dll pair up as
         // Esc/Ctrl+X close, Ctrl+A full screen, Ctrl+C copy, Ctrl+S save,
@@ -690,11 +822,7 @@ impl eframe::App for ZenShotApp {
                     desired_cursor = CursorIcon::Move;
                     let delta = current_pos - *start_mouse;
                     let mut new_rect = orig_rect.translate(delta);
-
-                    let clamped_x = new_rect.min.x.clamp(screen_rect.min.x, screen_rect.max.x - new_rect.width());
-                    let clamped_y = new_rect.min.y.clamp(screen_rect.min.y, screen_rect.max.y - new_rect.height());
-                    new_rect = Rect::from_min_size(Pos2::new(clamped_x, clamped_y), new_rect.size());
-
+                    new_rect = constrain_to_screen(new_rect, screen_rect);
                     self.selection = Some(new_rect);
 
                     if pointer.primary_released() {
@@ -914,13 +1042,32 @@ impl eframe::App for ZenShotApp {
                 }
             });
 
-        // The GDI freeze-frame stays up until the GL overlay has actually
-        // presented, so the hand-off has no uncovered frame in between.
+        if let Some(err) = &self.export_error {
+            egui::Area::new(egui::Id::new("export_error"))
+                .anchor(egui::Align2::CENTER_TOP, [0.0, 16.0])
+                .show(ctx, |ui| {
+                    egui::Frame::none()
+                        .fill(Color32::from_rgba_unmultiplied(28, 28, 28, 220))
+                        .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                        .rounding(4.0)
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(err)
+                                    .color(Color32::from_rgb(255, 210, 210))
+                                    .size(13.0),
+                            );
+                        });
+                });
+        }
+
+        // The previous update has been painted and swapped before this one.
+        // Uncloak only now, then retire the GDI cover after DWM composition.
         #[cfg(windows)]
-        if self.cover.is_some() {
+        if self.revealed_frames < 2 {
             self.revealed_frames = self.revealed_frames.saturating_add(1);
             ctx.request_repaint();
             if self.revealed_frames >= 2 {
+                crate::cover::reveal_overlay();
                 self.cover = None;
             }
         }
@@ -1075,6 +1222,27 @@ fn spawn_print_job(path: &std::path::Path) -> std::io::Result<()> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
+}
+
+/// Fits `rect` inside `screen`. Oversized selections (restored after a
+/// resolution change) are shrunk; inverted clamp ranges never reach `f32::clamp`.
+pub fn constrain_to_screen(rect: Rect, screen: Rect) -> Rect {
+    let rect = normalize_rect(rect);
+    let w = rect.width().min(screen.width()).max(1.0);
+    let h = rect.height().min(screen.height()).max(1.0);
+    let max_x = (screen.max.x - w).max(screen.min.x);
+    let max_y = (screen.max.y - h).max(screen.min.y);
+    let x = if screen.min.x <= max_x {
+        rect.min.x.clamp(screen.min.x, max_x)
+    } else {
+        screen.min.x
+    };
+    let y = if screen.min.y <= max_y {
+        rect.min.y.clamp(screen.min.y, max_y)
+    } else {
+        screen.min.y
+    };
+    Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h))
 }
 
 /// Normalizes a rectangle ensuring min <= max.
@@ -1373,6 +1541,49 @@ mod tests {
         assert_eq!(norm.max, Pos2::new(500.0, 400.0));
         assert_eq!(norm.width(), 400.0);
         assert_eq!(norm.height(), 350.0);
+    }
+
+    #[test]
+    fn oversized_selection_is_clamped_without_panic() {
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(100.0, 80.0));
+        let huge = Rect::from_min_size(Pos2::new(-20.0, -10.0), Vec2::new(400.0, 300.0));
+        let fit = constrain_to_screen(huge, screen);
+        assert!(fit.width() <= screen.width() + f32::EPSILON);
+        assert!(fit.height() <= screen.height() + f32::EPSILON);
+        assert!(fit.min.x >= screen.min.x);
+        assert!(fit.min.y >= screen.min.y);
+        assert!(fit.max.x <= screen.max.x + 0.01);
+        assert!(fit.max.y <= screen.max.y + 0.01);
+    }
+
+    fn assert_bar_ok(bar: Rect, safe: Rect) {
+        assert!(bar.width() > 0.0 && bar.height() > 0.0);
+        assert!(bar.min.x + 0.01 >= safe.min.x);
+        assert!(bar.min.y + 0.01 >= safe.min.y);
+        assert!(bar.max.x <= safe.max.x + 0.01);
+        assert!(bar.max.y <= safe.max.y + 0.01);
+    }
+
+    #[test]
+    fn fullscreen_toolbars_stay_above_taskbar_and_do_not_overlap() {
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1920.0, 1080.0));
+        let safe = Rect::from_min_max(Pos2::new(4.0, 4.0), Pos2::new(1916.0, 1032.0));
+        let (h, v) = layout_toolbars(screen, safe);
+        assert_bar_ok(h, safe);
+        assert_bar_ok(v, safe);
+        assert!(!h.intersects(v), "h={h:?} overlaps v={v:?}");
+    }
+
+    #[test]
+    fn mid_screen_selection_keeps_toolbars_outside() {
+        let safe = Rect::from_min_max(Pos2::new(4.0, 4.0), Pos2::new(1916.0, 1032.0));
+        let sel = Rect::from_min_size(Pos2::new(400.0, 300.0), Vec2::new(240.0, 180.0));
+        let (h, v) = layout_toolbars(sel, safe);
+        assert_bar_ok(h, safe);
+        assert_bar_ok(v, safe);
+        assert!(!h.intersects(v));
+        assert!(h.min.y >= sel.max.y);
+        assert!(v.min.x >= sel.max.x);
     }
 
     #[test]

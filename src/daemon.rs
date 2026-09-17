@@ -6,20 +6,22 @@ use crate::hotkey::Hotkey;
 use crate::notify::{wide, WM_RELOAD_CONFIG};
 use std::mem;
 use std::ptr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE,
-    NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_STATE, NIF_TIP, NIIF_INFO,
+    NIM_ADD, NIM_DELETE, NIM_MODIFY, NIS_HIDDEN, NOTIFYICONDATAW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetCursorPos, GetMessageW, LoadIconW, PostQuitMessage, RegisterClassExW, SetForegroundWindow,
-    TrackPopupMenu, TranslateMessage, UnregisterClassW, HWND_MESSAGE, IDI_APPLICATION, HICON, HMENU, MSG, TPM_BOTTOMALIGN,
-    TPM_RIGHTBUTTON, WM_COMMAND, WM_COPYDATA, WM_DESTROY, WM_HOTKEY, WM_LBUTTONDBLCLK,
-    WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSEXW,
+    GetCursorPos, GetMessageW, GetSystemMetrics, LoadIconW, LoadImageW, PostQuitMessage,
+    RegisterClassExW, RegisterWindowMessageW, SetForegroundWindow, TrackPopupMenu, TranslateMessage,
+    UnregisterClassW, IDI_APPLICATION, IMAGE_ICON, LR_SHARED, SM_CXSMICON, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_POPUP, HICON, HMENU, MSG, TPM_BOTTOMALIGN, TPM_RIGHTBUTTON, WM_COMMAND,
+    WM_COPYDATA, WM_DESTROY, WM_HOTKEY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSEXW,
 };
 
 const CLASS: &str = "ZenShotDaemon";
@@ -35,6 +37,10 @@ const ID_EXIT: usize = 1005;
 
 const HELP_URL: &str = "https://github.com/masudranaxpert/zenshot";
 const MOD_NOREPEAT: u32 = 0x4000;
+
+/// Explorer posts this after the taskbar is (re)created. Autostart can beat
+/// that, so we re-add the icon when it arrives.
+static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
 struct Inner {
     hwnd: HWND,
@@ -87,17 +93,19 @@ unsafe fn message_loop(config: Config) -> eframe::Result<()> {
         ))));
     }
 
-    // HWND_MESSAGE = -3: a window that never appears on screen.
+    // A real top-level window, never shown. HWND_MESSAGE (message-only)
+    // accepts Shell_NotifyIcon on some builds but Windows 11's explorer
+    // simply never paints the icon for those HWNDs.
     let hwnd = CreateWindowExW(
-        0,
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         class_w.as_ptr(),
         class_w.as_ptr(),
+        WS_POPUP,
         0,
         0,
         0,
         0,
-        0,
-        HWND_MESSAGE,
+        ptr::null_mut(),
         ptr::null_mut(),
         hinstance,
         ptr::null(),
@@ -109,22 +117,23 @@ unsafe fn message_loop(config: Config) -> eframe::Result<()> {
         ))));
     }
 
+    let taskbar_created = RegisterWindowMessageW(wide("TaskbarCreated").as_ptr());
+    TASKBAR_CREATED.store(taskbar_created, Ordering::Relaxed);
+
     let mut nid: NOTIFYICONDATAW = mem::zeroed();
     nid.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
     nid.hWnd = hwnd;
     nid.uID = 1;
-    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP | NIF_STATE;
     nid.uCallbackMessage = WM_TRAY;
     nid.hIcon = load_icon(hinstance);
+    nid.dwState = 0;
+    nid.dwStateMask = NIS_HIDDEN;
     write_tip(&mut nid, &tray_tip(&config));
 
-    if Shell_NotifyIconW(NIM_ADD, &nid) == 0 {
-        DestroyWindow(hwnd);
-        UnregisterClassW(class_w.as_ptr(), hinstance);
-        return Err(eframe::Error::AppCreation(Box::new(std::io::Error::other(
-            "Could not create the tray icon",
-        ))));
-    }
+    // Explorer may not have a tray yet (login autostart). Keep the daemon
+    // alive either way — TaskbarCreated will retry.
+    let _ = add_tray_icon(&mut nid);
 
     *lock_inner() = Some(Inner { hwnd, nid, config });
     register_hotkeys();
@@ -170,11 +179,36 @@ fn write_utf16(dest: &mut [u16], text: &str) {
 
 #[allow(clippy::manual_dangling_ptr)]
 unsafe fn load_icon(hinstance: windows_sys::Win32::Foundation::HINSTANCE) -> HICON {
+    let size = GetSystemMetrics(SM_CXSMICON);
+    let from_file = LoadImageW(
+        hinstance,
+        1u16 as *const u16,
+        IMAGE_ICON,
+        size,
+        size,
+        LR_SHARED,
+    );
+    if !from_file.is_null() {
+        return from_file;
+    }
     let embedded = LoadIconW(hinstance, 1u16 as *const u16);
     if !embedded.is_null() {
         embedded
     } else {
         LoadIconW(ptr::null_mut(), IDI_APPLICATION)
+    }
+}
+
+fn add_tray_icon(nid: &mut NOTIFYICONDATAW) -> bool {
+    unsafe {
+        let _ = Shell_NotifyIconW(NIM_DELETE, nid);
+        for _ in 0..15 {
+            if Shell_NotifyIconW(NIM_ADD, nid) != 0 {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        Shell_NotifyIconW(NIM_ADD, nid) != 0
     }
 }
 
@@ -412,6 +446,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         WM_DESTROY => {
             PostQuitMessage(0);
+            0
+        }
+        m if m != 0 && m == TASKBAR_CREATED.load(Ordering::Relaxed) => {
+            let mut guard = lock_inner();
+            if let Some(inner) = guard.as_mut() {
+                inner.nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP | NIF_STATE;
+                inner.nid.dwState = 0;
+                inner.nid.dwStateMask = NIS_HIDDEN;
+                let _ = add_tray_icon(&mut inner.nid);
+            }
             0
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
