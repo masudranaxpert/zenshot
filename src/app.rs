@@ -308,8 +308,6 @@ pub struct ZenShotApp {
     last_pointer: Pos2,
     export_error: Option<String>,
     vanished: bool,
-    #[cfg(windows)]
-    revealed: bool,
 }
 
 impl ZenShotApp {
@@ -346,8 +344,6 @@ impl ZenShotApp {
             last_pointer: Pos2::ZERO,
             export_error: None,
             vanished: false,
-            #[cfg(windows)]
-            revealed: false,
         }
     }
 
@@ -358,18 +354,12 @@ impl ZenShotApp {
             return;
         }
         self.vanished = true;
-        #[cfg(windows)]
-        crate::cover::hide_window();
-        #[cfg(not(windows))]
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        let _ = ctx;
     }
 
     fn restore(&mut self, ctx: &egui::Context) {
         self.vanished = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        #[cfg(windows)]
-        crate::cover::show_window();
     }
 
     fn fail_export(&mut self, ctx: &egui::Context, err: String) {
@@ -1055,21 +1045,15 @@ impl eframe::App for ZenShotApp {
                 });
         }
 
-        // Reveal overlay on the first frame after the screenshot texture is painted.
-        #[cfg(windows)]
-        if !self.revealed {
-            self.revealed = true;
-            crate::cover::reveal_window();
-        }
+        // Removed cover::reveal_window() because the window is transparent.
     }
 
 
-    /// eframe's default clear is near-black, which shows as a dark flash in any
-    /// frame the desktop image has not covered yet (first paint, resize, DPI
-    /// change). Clearing to the dim the overlay itself paints makes those
-    /// frames indistinguishable from the finished overlay.
+    /// We use a completely transparent clear color. Because the window is
+    /// created with `with_transparent(true)`, it will be invisible until the
+    /// first frame paints the screenshot texture, eliminating the startup "pop".
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.36, 0.36, 0.36, 1.0]
+        [0.0, 0.0, 0.0, 0.0]
     }
 }
 
