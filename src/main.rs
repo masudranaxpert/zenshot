@@ -73,19 +73,11 @@ fn run_capture() -> eframe::Result<()> {
 
     let config = Config::load_or_default();
 
-    #[cfg(windows)]
-    let (screen_image, cover) = match capture::capture_screen_with_cover(config.capture_cursor) {
-        Ok(pair) => pair,
-        Err(err) => {
-            eprintln!("Error capturing screen: {err}");
-            return Ok(());
-        }
-    };
-    #[cfg(not(windows))]
     let screen_image = match capture::capture_screen(config.capture_cursor) {
         Ok(img) => img,
         Err(err) => {
             eprintln!("Error capturing screen: {err}");
+            #[cfg(not(windows))]
             eprintln!("On Wayland, allow the screenshot permission if a portal dialog appears.");
             return Ok(());
         }
@@ -97,13 +89,7 @@ fn run_capture() -> eframe::Result<()> {
         "ZenShot",
         native_options,
         Box::new(move |cc| {
-            #[cfg(windows)]
-            crate::cover::prepare_overlay();
-            let mut app = ZenShotApp::new(config, screen_image, &cc.egui_ctx);
-            #[cfg(windows)]
-            {
-                app = app.with_cover(cover);
-            }
+            let app = ZenShotApp::new(config, screen_image, &cc.egui_ctx);
             Ok(Box::new(app))
         }),
     )
@@ -145,7 +131,20 @@ fn overlay_logical_size(physical_w: f32, physical_h: f32) -> (f32, f32) {
 fn display_scale_factor() -> f32 {
     #[cfg(windows)]
     {
-        (unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() } as f32 / 96.0).max(1.0)
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
+        use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+
+        let pt = POINT { x: 0, y: 0 };
+        let hmon = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY) };
+        let mut dpi_x = 96u32;
+        let mut dpi_y = 96u32;
+        let res = unsafe { GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
+        if res == 0 && dpi_x > 0 {
+            (dpi_x as f32 / 96.0).max(1.0)
+        } else {
+            (unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() } as f32 / 96.0).max(1.0)
+        }
     }
     #[cfg(not(windows))]
     {

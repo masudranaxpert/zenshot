@@ -3,23 +3,11 @@ use image::RgbaImage;
 /// Captures virtual screen content into memory without writing to disk.
 #[cfg(target_os = "windows")]
 pub fn capture_screen(capture_cursor: bool) -> Result<RgbaImage, String> {
-    capture_gdi(capture_cursor, false).map(|(img, _)| img)
-}
-
-/// Same capture, then immediately freeze the desktop with a GDI popup so the
-/// user never sees a wait cursor or a black OpenGL window.
-#[cfg(target_os = "windows")]
-pub fn capture_screen_with_cover(
-    capture_cursor: bool,
-) -> Result<(RgbaImage, Option<crate::cover::FrozenDesktop>), String> {
-    capture_gdi(capture_cursor, true)
+    capture_gdi(capture_cursor)
 }
 
 #[cfg(target_os = "windows")]
-fn capture_gdi(
-    capture_cursor: bool,
-    freeze: bool,
-) -> Result<(RgbaImage, Option<crate::cover::FrozenDesktop>), String> {
+fn capture_gdi(capture_cursor: bool) -> Result<RgbaImage, String> {
     use windows_sys::Win32::Graphics::Gdi::*;
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -73,13 +61,6 @@ fn capture_gdi(
             return Err("GetDIBits returned no scanlines".to_string());
         }
 
-        // Freeze BEFORE the RGBA conversion so the popup is on screen in ~one blit.
-        let cover = if freeze {
-            crate::cover::FrozenDesktop::show_bgra(width, height, &raw)
-        } else {
-            None
-        };
-
         // Win32 GDI outputs BGRA; swap B and R channels to RGBA in RAM.
         // Operating on 32-bit words is an order of magnitude faster than byte chunk swaps.
         let pixels: &mut [u32] =
@@ -92,9 +73,8 @@ fn capture_gdi(
                 | 0xFF00_0000;
         }
 
-        let image = RgbaImage::from_raw(width as u32, height as u32, raw)
-            .ok_or_else(|| "Failed to construct in-memory image buffer".to_string())?;
-        Ok((image, cover))
+        RgbaImage::from_raw(width as u32, height as u32, raw)
+            .ok_or_else(|| "Failed to construct in-memory image buffer".to_string())
     }
 }
 

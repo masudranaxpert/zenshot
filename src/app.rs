@@ -308,11 +308,8 @@ pub struct ZenShotApp {
     last_pointer: Pos2,
     export_error: Option<String>,
     vanished: bool,
-    /// Drop the GDI freeze-frame only after the GL overlay has presented.
     #[cfg(windows)]
-    cover: Option<crate::cover::FrozenDesktop>,
-    #[cfg(windows)]
-    revealed_frames: u8,
+    revealed: bool,
 }
 
 impl ZenShotApp {
@@ -350,44 +347,29 @@ impl ZenShotApp {
             export_error: None,
             vanished: false,
             #[cfg(windows)]
-            cover: None,
-            #[cfg(windows)]
-            revealed_frames: 0,
+            revealed: false,
         }
-    }
-
-    #[cfg(windows)]
-    pub fn with_cover(mut self, cover: Option<crate::cover::FrozenDesktop>) -> Self {
-        self.cover = cover;
-        self
     }
 
     /// Hide the overlay immediately — before crop/clipboard — so Copy/Esc
     /// feels like Lightshot (the select area is gone, then work happens).
-    /// Uses synchronous Win32 cloak+hide only; the deferred ViewportCommand
-    /// would re-open the window for one egui frame, causing flicker.
     fn vanish(&mut self, ctx: &egui::Context) {
         if self.vanished {
             return;
         }
         self.vanished = true;
         #[cfg(windows)]
-        {
-            crate::cover::hide_overlay_windows();
-            self.cover = None;
-        }
-        // On non-Windows, defer-hide via egui command (no Win32 path available).
+        crate::cover::hide_window();
         #[cfg(not(windows))]
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        let _ = ctx; // suppress unused warning on Windows
+        let _ = ctx;
     }
-
 
     fn restore(&mut self, ctx: &egui::Context) {
         self.vanished = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         #[cfg(windows)]
-        crate::cover::show_overlay_windows();
+        crate::cover::show_window();
     }
 
     fn fail_export(&mut self, ctx: &egui::Context, err: String) {
@@ -1073,18 +1055,11 @@ impl eframe::App for ZenShotApp {
                 });
         }
 
-        // Frame 2: uncloak the egui overlay (GL surface is now fully painted).
-        // Frame 3: drop the GDI cover only after DWM has composited the egui
-        // surface at least once — eliminates the z-order gap on teardown.
+        // Reveal overlay on the first frame after the screenshot texture is painted.
         #[cfg(windows)]
-        if self.revealed_frames < 3 {
-            self.revealed_frames = self.revealed_frames.saturating_add(1);
-            ctx.request_repaint();
-            if self.revealed_frames == 2 {
-                crate::cover::reveal_overlay();
-            } else if self.revealed_frames == 3 {
-                self.cover = None;
-            }
+        if !self.revealed {
+            self.revealed = true;
+            crate::cover::reveal_window();
         }
     }
 
