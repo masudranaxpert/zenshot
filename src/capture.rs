@@ -7,31 +7,37 @@ pub fn capture_screen(capture_cursor: bool) -> Result<RgbaImage, String> {
 }
 
 #[cfg(target_os = "windows")]
+pub fn virtual_screen_bounds() -> (i32, i32, i32, i32) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    unsafe {
+        let x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        let y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        let w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        let h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        (x, y, w, h)
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn capture_gdi(capture_cursor: bool) -> Result<RgbaImage, String> {
     use windows_sys::Win32::Graphics::Gdi::*;
-    use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
     unsafe {
-        // Without this the OS hands back a virtualized, downscaled desktop on
-        // any display running above 100% scaling, which shows up as a blurry
-        // screenshot.
-        let _ = windows_sys::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
-            windows_sys::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-        );
+        let (x, y, width, height) = virtual_screen_bounds();
 
         let hdc_screen = GetDC(std::ptr::null_mut());
-        let width = GetSystemMetrics(SM_CXSCREEN);
-        let height = GetSystemMetrics(SM_CYSCREEN);
-
         let hdc_mem = CreateCompatibleDC(hdc_screen);
         let hbm = CreateCompatibleBitmap(hdc_screen, width, height);
         let old_obj = SelectObject(hdc_mem, hbm);
 
-        BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, 0, 0, SRCCOPY);
+        BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, x, y, SRCCOPY);
 
         if capture_cursor {
-            draw_cursor(hdc_mem);
+            draw_cursor(hdc_mem, x, y);
         }
+
+        // Unselect bitmap from DC before GetDIBits to avoid undefined behavior
+        SelectObject(hdc_mem, old_obj);
 
         let mut bi: BITMAPINFO = std::mem::zeroed();
         bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
@@ -52,7 +58,6 @@ fn capture_gdi(capture_cursor: bool) -> Result<RgbaImage, String> {
             DIB_RGB_COLORS,
         );
 
-        SelectObject(hdc_mem, old_obj);
         DeleteObject(hbm);
         DeleteDC(hdc_mem);
         ReleaseDC(std::ptr::null_mut(), hdc_screen);
@@ -62,10 +67,19 @@ fn capture_gdi(capture_cursor: bool) -> Result<RgbaImage, String> {
         }
 
         // Win32 GDI outputs BGRA; swap B and R channels to RGBA in RAM.
-        // Operating on 32-bit words is an order of magnitude faster than byte chunk swaps.
+        // Chunk unrolling optimizes auto-vectorization across 32-bit words.
         let pixels: &mut [u32] =
             std::slice::from_raw_parts_mut(raw.as_mut_ptr() as *mut u32, (width * height) as usize);
-        for p in pixels.iter_mut() {
+        for chunk in pixels.chunks_exact_mut(8) {
+            for p in chunk.iter_mut() {
+                let val = *p;
+                *p = (val & 0x0000_FF00)
+                    | ((val & 0x00FF_0000) >> 16)
+                    | ((val & 0x0000_00FF) << 16)
+                    | 0xFF00_0000;
+            }
+        }
+        for p in pixels.chunks_exact_mut(8).into_remainder().iter_mut() {
             let val = *p;
             *p = (val & 0x0000_FF00)
                 | ((val & 0x00FF_0000) >> 16)
@@ -90,7 +104,7 @@ mod tests {
 }
 
 #[cfg(target_os = "windows")]
-unsafe fn draw_cursor(hdc_mem: windows_sys::Win32::Graphics::Gdi::HDC) {
+unsafe fn draw_cursor(hdc_mem: windows_sys::Win32::Graphics::Gdi::HDC, origin_x: i32, origin_y: i32) {
     use windows_sys::Win32::Graphics::Gdi::DeleteObject;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, ICONINFO,
@@ -114,8 +128,8 @@ unsafe fn draw_cursor(hdc_mem: windows_sys::Win32::Graphics::Gdi::HDC) {
         hbmColor: std::ptr::null_mut(),
     };
     let (dx, dy) = if GetIconInfo(info.hCursor, &mut icon) != 0 {
-        let x = info.ptScreenPos.x - icon.xHotspot as i32;
-        let y = info.ptScreenPos.y - icon.yHotspot as i32;
+        let x = info.ptScreenPos.x - icon.xHotspot as i32 - origin_x;
+        let y = info.ptScreenPos.y - icon.yHotspot as i32 - origin_y;
         if !icon.hbmMask.is_null() {
             DeleteObject(icon.hbmMask);
         }
@@ -124,7 +138,7 @@ unsafe fn draw_cursor(hdc_mem: windows_sys::Win32::Graphics::Gdi::HDC) {
         }
         (x, y)
     } else {
-        (info.ptScreenPos.x, info.ptScreenPos.y)
+        (info.ptScreenPos.x - origin_x, info.ptScreenPos.y - origin_y)
     };
 
     DrawIconEx(

@@ -79,10 +79,8 @@ pub const PALETTE: [Color32; 6] = [
     Color32::from_rgb(255, 255, 255), // White
 ];
 
-// Toolbar metrics recovered from the bitmap resources in Lightshot.dll: the
-// action bar ships as a 204x29 strip holding 7 buttons of 24x20, and the tool bar
-// as a 29x204 strip holding 8 buttons of 20x20. Those two solve exactly for the
-// padding/gap/margin below.
+// Standard toolbar metrics: action bar holds 4 buttons of 24x20, and the tool bar
+// holds 8 buttons of 20x20. Those two solve for the padding/gap/margin below.
 const H_ICON: Vec2 = Vec2::new(24.0, 20.0);
 const V_ICON: Vec2 = Vec2::new(20.0, 20.0);
 const BAR_THICKNESS: f32 = 29.0;
@@ -102,45 +100,9 @@ fn bar_length(n: f32, icon: f32) -> f32 {
 
 const TOOLBAR_GAP: f32 = 4.0;
 
-/// Screen region the floating bars may occupy. On Windows this is the monitor
-/// work area (above the taskbar); everywhere else, a small inset from the overlay.
+/// Screen region the floating bars may occupy, inset by a small margin from the overlay.
 fn toolbar_safe_bounds(screen: Rect) -> Rect {
-    let inset = screen.shrink(TOOLBAR_GAP);
-    #[cfg(windows)]
-    {
-        if let Some(work) = windows_work_area_points() {
-            let clipped = work.intersect(inset);
-            if clipped.width() >= BAR_THICKNESS && clipped.height() >= BAR_THICKNESS {
-                return clipped;
-            }
-        }
-    }
-    inset
-}
-
-#[cfg(windows)]
-fn windows_work_area_points() -> Option<Rect> {
-    use windows_sys::Win32::Foundation::RECT;
-    use windows_sys::Win32::UI::HiDpi::GetDpiForSystem;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETWORKAREA};
-
-    let mut rc = RECT {
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-    };
-    let ok = unsafe {
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, (&mut rc as *mut RECT).cast(), 0)
-    };
-    if ok == 0 || rc.right <= rc.left || rc.bottom <= rc.top {
-        return None;
-    }
-    let dpi = (unsafe { GetDpiForSystem() } as f32 / 96.0).max(1.0);
-    Some(Rect::from_min_max(
-        Pos2::new(rc.left as f32 / dpi, rc.top as f32 / dpi),
-        Pos2::new(rc.right as f32 / dpi, rc.bottom as f32 / dpi),
-    ))
+    screen.shrink(TOOLBAR_GAP)
 }
 
 fn clamp_pos(v: f32, lo: f32, hi: f32) -> f32 {
@@ -217,10 +179,8 @@ fn layout_toolbars(sel: Rect, safe: Rect) -> (Rect, Rect) {
     (h_rect, v_rect)
 }
 
-/// Selection chrome, measured from Lightshot's own overlay: the outline is a
-/// 1px marching-ants pattern of three black then three white pixels, the eight
-/// grips are 6x6 black squares ringed in white, and the size badge is black at
-/// ~79% over the dimmed desktop.
+/// Selection chrome: 1px marching-ants pattern of three black then three white pixels,
+/// eight 6x6 square grips, and a dimension badge above top-left.
 const ANTS_DASH: f32 = 3.0;
 const HANDLE_SIZE: f32 = 6.0;
 const BADGE_FONT_SIZE: f32 = 11.0;
@@ -308,6 +268,7 @@ pub struct ZenShotApp {
     last_pointer: Pos2,
     export_error: Option<String>,
     vanished: bool,
+    frame_count: u32,
 }
 
 impl ZenShotApp {
@@ -325,15 +286,15 @@ impl ZenShotApp {
         };
 
         let size = [screen_image.width() as usize, screen_image.height() as usize];
-        let pixels = screen_image.as_flat_samples();
-        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+        let pixels: Vec<egui::Color32> = bytemuck::cast_vec(screen_image.as_raw().clone());
+        let color_image = egui::ColorImage { size, pixels };
         let texture = ctx.load_texture("desktop", color_image, egui::TextureOptions::NEAREST);
 
         Self {
             config,
             screen_image,
             texture: Some(texture),
-            icons: Some(ToolbarIcons::load(ctx)),
+            icons: None,
             selection,
             drag_state: DragState::None,
             current_tool: Tool::Select,
@@ -344,11 +305,11 @@ impl ZenShotApp {
             last_pointer: Pos2::ZERO,
             export_error: None,
             vanished: false,
+            frame_count: 0,
         }
     }
 
-    /// Hide the overlay immediately — before crop/clipboard — so Copy/Esc
-    /// feels like Lightshot (the select area is gone, then work happens).
+    /// Hide the overlay immediately so Copy/Esc gives immediate visual feedback before background export.
     fn vanish(&mut self, ctx: &egui::Context) {
         if self.vanished {
             return;
@@ -519,8 +480,7 @@ impl ZenShotApp {
     }
 }
 
-/// Draws the toolbar chrome scanline by scanline, reproducing the 204x29 and
-/// 29x204 strips shipped in Lightshot.dll: a 1px translucent black frame, a
+/// Draws the toolbar chrome scanline by scanline: a 1px translucent black frame, a
 /// (250,251,251) highlight row, a linear body fade to (211,214,217), then a
 /// two-row drop shadow. `vertical` runs the fade left-to-right instead.
 pub(crate) fn paint_lightshot_toolbar(painter: &egui::Painter, rect: Rect, vertical: bool) {
@@ -565,8 +525,8 @@ const TOOLBAR_FRAME: Color32 = Color32::from_black_alpha(19);
 /// Colour of scanline `row` of a toolbar `rows` thick.
 ///
 /// The body is not a single ramp: the strip falls from (245,247,248) to
-/// (232,236,239) over the first 8% and then eases to (211,214,217), which is
-/// what makes Lightshot's bars read as glossy rather than flat.
+/// (232,236,239) over the first 8% and then eases to (211,214,217), which
+/// gives the bars a glossy rather than flat finish.
 fn toolbar_scanline(row: i32, rows: i32) -> Color32 {
     const HIGHLIGHT: Color32 = Color32::from_rgb(250, 251, 251);
     const BODY_TOP: (u8, u8, u8) = (245, 247, 248);
@@ -608,10 +568,8 @@ fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t).round() as u8
 }
 
-/// One toolbar cell rendered the way Lightshot does it: the near-black glyph
-/// while idle, the cyan-blue glyph on hover or when the tool is selected, plus
-/// the original soft hover highlight. The cell keeps the icon plus one
-/// `BTN_PAD` of hit area on every side so `bar_length` math stays exact.
+/// One toolbar cell: dark glyph while idle, colored glyph on hover or when
+/// selected, plus soft hover highlight.
 fn icon_button(ui: &mut egui::Ui, icon: &IconPair, size: Vec2, active: bool, tip: &str) -> egui::Response {
     let cell = size + Vec2::splat(2.0 * BTN_PAD);
     let (rect, resp) = ui.allocate_exact_size(cell, egui::Sense::click());
@@ -626,8 +584,7 @@ fn icon_button(ui: &mut egui::Ui, icon: &IconPair, size: Vec2, active: bool, tip
         ui.painter().rect_stroke(rect, 2.0, border);
     }
 
-    // The 2x originals are downsampled by the GPU through a mipmapped linear
-    // texture, so the glyphs stay perfectly smooth at any display scaling.
+    // Downsample icon through a mipmapped linear texture for smooth edges at any DPI.
     egui::Image::new(icon.get(active || hovered))
         .fit_to_exact_size(size)
         .rounding(2.0)
@@ -645,11 +602,8 @@ impl eframe::App for ZenShotApp {
             }
         }
 
-        // 2. Global hotkeys. The accelerator strings in Lightshot.dll pair up as
-        // Esc/Ctrl+X close, Ctrl+A full screen, Ctrl+C copy, Ctrl+S save,
-        // Ctrl+P print and Ctrl+Z undo.
-        // They stay inert while the text tool has focus, otherwise typing would
-        // close the overlay or eat the keystroke.
+        // 2. Global overlay hotkeys: Esc/Ctrl+X close, Ctrl+A full screen,
+        // Ctrl+C copy, Ctrl+S save, Ctrl+P print and Ctrl+Z undo.
         if self.active_text_pos.is_some() {
             if ctx.input(|i| i.key_pressed(Key::Escape)) {
                 self.active_text_pos = None;
@@ -683,14 +637,12 @@ impl eframe::App for ZenShotApp {
             }
         }
 
-        // 3. Pointer and toolbar hover detection (CRITICAL: prevents toolbar clicks from resetting selection)
+        // 3. Pointer and toolbar hover detection
         let pointer = ctx.input(|i| i.pointer.clone());
-        // `hover_pos` is None whenever the cursor leaves the window; falling back
-        // to the origin would snap an in-progress selection to the top-left.
         let current_pos = pointer.latest_pos().unwrap_or(self.last_pointer);
         self.last_pointer = current_pos;
 
-        // Right-click clears the selection, as in Lightshot.
+        // Right-click clears the selection.
         if pointer.secondary_clicked() {
             self.selection = None;
             self.annotations.clear();
@@ -702,13 +654,8 @@ impl eframe::App for ZenShotApp {
             h_bar.contains(current_pos) || v_bar.contains(current_pos)
         });
 
-        // Only block *starting* a new interaction. Blocking the whole state
-        // machine would strand an in-progress drag whose release happens to land
-        // on a toolbar.
         let mouse_on_toolbar = on_toolbar && matches!(self.drag_state, DragState::None);
 
-        // Lightshot keeps the plain arrow over its floating toolbars; the
-        // crosshair is only the selection and drawing cursor.
         let mut desired_cursor = if mouse_on_toolbar {
             CursorIcon::Default
         } else {
@@ -919,8 +866,7 @@ impl eframe::App for ZenShotApp {
                 let painter = ui.painter();
 
                 if let Some(tex) = &self.texture {
-                    // Darkened desktop background. Sampling Lightshot's overlay
-                    // shows white pixels land on 128, i.e. a flat 50% multiply.
+                    // Darkened desktop background using 50% multiply.
                     painter.image(
                         tex.id(),
                         screen_rect,
@@ -1019,9 +965,12 @@ impl eframe::App for ZenShotApp {
                     }
                 }
 
-                // Render Lightshot Dual Toolbars when selection is active
+                // Render toolbars when selection is active
                 if let Some(sel) = self.selection {
                     if matches!(self.drag_state, DragState::None) {
+                        if self.icons.is_none() {
+                            self.icons = Some(ToolbarIcons::load(ctx));
+                        }
                         self.render_lightshot_toolbars(ui, ctx, sel, screen_rect);
                     }
                 }
@@ -1045,20 +994,22 @@ impl eframe::App for ZenShotApp {
                 });
         }
 
-        // Removed cover::reveal_window() because the window is transparent.
+        // Reveal window on frame 2: frame 1 completes GPU texture upload and swapchain presentation.
+        // Revealing on frame 2 avoids any unrendered flash, sizing handshake jerk, or blank frame.
+        self.frame_count += 1;
+        if self.frame_count == 2 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
     }
 
-
-    /// We use a completely transparent clear color. Because the window is
-    /// created with `with_transparent(true)`, it will be invisible until the
-    /// first frame paints the screenshot texture, eliminating the startup "pop".
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 0.0]
+        [0.0, 0.0, 0.0, 1.0]
     }
 }
 
 impl ZenShotApp {
-    /// Renders Lightshot's iconic Dual Floating Toolbars (Horizontal & Vertical) with extracted icons.
+    /// Renders floating toolbars (Horizontal & Vertical) for actions and annotation tools.
     fn render_lightshot_toolbars(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, sel: Rect, screen_rect: Rect) {
         enum ToolbarAction {
             None,
@@ -1130,7 +1081,7 @@ impl ZenShotApp {
                         action = ToolbarAction::SelectTool(if current_tool == Tool::Text { Tool::Select } else { Tool::Text });
                     }
 
-                    // Colour swatch: Lightshot's own swatch frame tinted with
+                    // Colour swatch: swatch frame tinted with
                     // the active colour, sized to line up with the icons.
                     let cell = v_btn_size + Vec2::splat(2.0 * BTN_PAD);
                     let (rect, resp) = ui.allocate_exact_size(cell, egui::Sense::click());
@@ -1139,8 +1090,7 @@ impl ZenShotApp {
                         ui.painter().rect_filled(rect, 2.0, Color32::from_white_alpha(150));
                         ui.painter().rect_stroke(rect, 2.0, border);
                     }
-                    // The frame's centre is transparent in the original
-                    // resource: Lightshot fills the chip underneath it.
+                    // Fill the chip underneath the frame.
                     ui.painter().rect_filled(rect.shrink(2.0 * BTN_PAD), 2.0, current_color);
                     egui::Image::new(&icons.color)
                         .fit_to_exact_size(v_btn_size)
@@ -1634,10 +1584,9 @@ mod tests {
         assert!(painted > 0, "text annotation was not burned into the image");
     }
 
-    /// Scanline colours sampled from the 204x29 toolbar strip inside
-    /// Lightshot.dll, so the hand-rolled gradient cannot drift away from it.
+    /// Scanline colours sampled from the toolbar strip to verify gradient consistency.
     #[test]
-    fn test_toolbar_gradient_matches_lightshot_strip() {
+    fn test_toolbar_gradient_matches_expected() {
         let expected: [(i32, [u8; 3]); 9] = [
             (1, [250, 251, 251]),
             (2, [245, 247, 248]),

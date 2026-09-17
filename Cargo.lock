@@ -4223,13 +4223,15 @@ dependencies = [
 
 [[package]]
 name = "zenshot"
-version = "2.9.6"
+version = "2.9.7"
 dependencies = [
  "arboard",
+ "bytemuck",
  "chrono",
  "dirs",
  "eframe",
  "image",
+ "raw-window-handle",
  "serde",
  "toml 0.8.23",
  "webbrowser",

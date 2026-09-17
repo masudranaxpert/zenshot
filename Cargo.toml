@@ -1,6 +1,6 @@
 [package]
 name = "zenshot"
-version = "2.9.6"
+version = "2.9.7"
 edition = "2021"
 authors = ["Masud Rana <masudranaxpert@gmail.com>"]
 description = "Ultra-fast, featherlight cross-platform screen capture tool with zero disk I/O"
@@ -18,7 +18,10 @@ chrono = "0.4"
 dirs = "5.0"
 webbrowser = "1.0"
 
+bytemuck = "1.25"
+
 [target.'cfg(windows)'.dependencies]
+raw-window-handle = "0.6"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
@@ -43,7 +46,7 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
-strip = true
+strip = "debuginfo"
 
 [package.metadata.deb]
 name = "zenshot"

@@ -202,11 +202,11 @@ unsafe fn load_icon(hinstance: windows_sys::Win32::Foundation::HINSTANCE) -> HIC
 fn add_tray_icon(nid: &mut NOTIFYICONDATAW) -> bool {
     unsafe {
         let _ = Shell_NotifyIconW(NIM_DELETE, nid);
-        for _ in 0..15 {
+        for _ in 0..3 {
             if Shell_NotifyIconW(NIM_ADD, nid) != 0 {
                 return true;
             }
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
         Shell_NotifyIconW(NIM_ADD, nid) != 0
     }
@@ -319,14 +319,16 @@ fn spawn_self(arg: &str) {
 }
 
 fn save_fullscreen_now() {
-    let config = Config::load_or_default();
-    match crate::capture::capture_screen(config.capture_cursor) {
-        Ok(img) => match crate::export::save_image(&img, &config) {
-            Ok(path) => balloon("ZenShot", &format!("Screenshot is saved to {}", path.display())),
+    std::thread::spawn(|| {
+        let config = Config::load_or_default();
+        match crate::capture::capture_screen(config.capture_cursor) {
+            Ok(img) => match crate::export::save_image(&img, &config) {
+                Ok(path) => balloon("ZenShot", &format!("Screenshot is saved to {}", path.display())),
+                Err(err) => balloon("ZenShot", &err),
+            },
             Err(err) => balloon("ZenShot", &err),
-        },
-        Err(err) => balloon("ZenShot", &err),
-    }
+        }
+    });
 }
 
 fn show_menu(hwnd: HWND) {

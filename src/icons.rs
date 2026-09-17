@@ -1,10 +1,7 @@
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
 
-/// One toolbar icon in both of Lightshot's render states: the near-black
-/// glyph shown while idle and the cyan-blue glyph shown on hover or while
-/// the tool is selected. Both come straight from Lightshot's own resources
-/// at 2x (40x40 / 48x40), so the GPU always downsamples instead of
-/// magnifying pixel art.
+/// One toolbar icon in dual render states: the dark glyph shown while idle
+/// and the colored glyph shown on hover or while the tool is selected.
 pub struct IconPair {
     pub normal: TextureHandle,
     pub active: TextureHandle,
@@ -16,7 +13,7 @@ impl IconPair {
     }
 }
 
-/// Container for all embedded Lightshot toolbar icon textures.
+/// Container for all embedded toolbar icon textures.
 pub struct ToolbarIcons {
     // Horizontal Toolbar icons (100% local, no privacy-leaking upload)
     pub print: IconPair,
@@ -65,9 +62,7 @@ fn pair(ctx: &egui::Context, name: &str, normal: &[u8], active: &[u8]) -> IconPa
     }
 }
 
-/// The 2x originals already carry Lightshot's own anti-aliasing, so linear
-/// filtering plus mipmaps keeps every edge smooth at 100%, 125%, 150% and
-/// 200% display scaling (glow backend generates the mip chain).
+/// Linear filtering plus mipmaps keeps icon edges smooth at any display scaling factor.
 fn texture_options() -> TextureOptions {
     TextureOptions {
         mipmap_mode: Some(egui::TextureFilter::Linear),

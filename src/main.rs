@@ -24,11 +24,15 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> eframe::Result<()> {
     #[cfg(windows)]
-    attach_parent_console();
-    #[cfg(windows)]
     enable_dpi();
 
-    match Mode::from_args(env::args().skip(1).collect()) {
+    let mode = Mode::from_args(env::args().skip(1).collect());
+    #[cfg(windows)]
+    if matches!(mode, Mode::Help | Mode::Version | Mode::PrintConfig) {
+        attach_parent_console();
+    }
+
+    match mode {
         Mode::Help => {
             print_help();
             Ok(())
@@ -88,16 +92,48 @@ fn run_capture() -> eframe::Result<()> {
         "ZenShot",
         native_options,
         Box::new(move |cc| {
+            #[cfg(windows)]
+            {
+                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
+
+                if let Ok(handle) = cc.window_handle() {
+                    if let RawWindowHandle::Win32(w32) = handle.as_raw() {
+                        let hwnd = w32.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+                        let disable: i32 = 1;
+                        unsafe {
+                            let _ = DwmSetWindowAttribute(
+                                hwnd,
+                                DWMWA_TRANSITIONS_FORCEDISABLED as u32,
+                                &disable as *const _ as *const _,
+                                std::mem::size_of::<i32>() as u32,
+                            );
+                        }
+                    }
+                }
+            }
+
             let app = ZenShotApp::new(config, screen_image, &cc.egui_ctx);
             Ok(Box::new(app))
         }),
     )
 }
 
-fn overlay_native_options(screen_image: &image::RgbaImage) -> eframe::NativeOptions {
-    let width = screen_image.width() as f32;
-    let height = screen_image.height() as f32;
-    let (logical_w, logical_h) = overlay_logical_size(width, height);
+fn overlay_native_options(_screen_image: &image::RgbaImage) -> eframe::NativeOptions {
+    let scale = display_scale_factor().max(1.0);
+
+    #[cfg(windows)]
+    let (origin_x, origin_y, width, height) = {
+        let (vx, vy, vw, vh) = capture::virtual_screen_bounds();
+        (vx as f32, vy as f32, vw as f32, vh as f32)
+    };
+    #[cfg(not(windows))]
+    let (origin_x, origin_y, width, height) = {
+        (0.0_f32, 0.0_f32, screen_image.width() as f32, screen_image.height() as f32)
+    };
+
+    let (logical_w, logical_h) = (width / scale, height / scale);
+    let (logical_x, logical_y) = (origin_x / scale, origin_y / scale);
 
     let builder = ViewportBuilder::default()
         .with_title("ZenShot")
@@ -106,8 +142,9 @@ fn overlay_native_options(screen_image: &image::RgbaImage) -> eframe::NativeOpti
         .with_taskbar(false)
         .with_always_on_top()
         .with_fullscreen(false)
-        .with_transparent(true)
-        .with_position(eframe::egui::pos2(0.0, 0.0))
+        .with_visible(false)
+        .with_transparent(false)
+        .with_position(eframe::egui::pos2(logical_x, logical_y))
         .with_inner_size(eframe::egui::vec2(logical_w, logical_h));
 
     eframe::NativeOptions {
@@ -116,11 +153,6 @@ fn overlay_native_options(screen_image: &image::RgbaImage) -> eframe::NativeOpti
         viewport: builder,
         ..Default::default()
     }
-}
-
-fn overlay_logical_size(physical_w: f32, physical_h: f32) -> (f32, f32) {
-    let scale = display_scale_factor().max(1.0);
-    (physical_w / scale, physical_h / scale)
 }
 
 fn display_scale_factor() -> f32 {
