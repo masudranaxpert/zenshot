@@ -5,8 +5,8 @@ use std::ptr;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use windows_sys::Win32::Foundation::HWND;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetSystemMetrics, SetForegroundWindow, SetWindowPos, ShowWindow,
-    HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW,
+    FindWindowW, SetForegroundWindow, SetWindowPos, ShowWindow,
+    HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW,
 };
 
 use crate::notify::wide;
@@ -34,16 +34,25 @@ pub fn reveal_window() {
     unsafe {
         let hwnd = get_overlay_hwnd();
         if !hwnd.is_null() {
-            let width = GetSystemMetrics(SM_CXSCREEN);
-            let height = GetSystemMetrics(SM_CYSCREEN);
+            // Disable window animation/transition zoom so overlay appears instantly without trembling
+            use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
+            let disable: u32 = 1;
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_TRANSITIONS_FORCEDISABLED as u32,
+                &disable as *const _ as *const _,
+                std::mem::size_of::<u32>() as u32,
+            );
+
+            // Show window and bring to top without moving or resizing to avoid winit layout relayout shake
             SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,
                 0,
                 0,
-                width,
-                height,
-                SWP_SHOWWINDOW,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
             );
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
