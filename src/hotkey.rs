@@ -35,6 +35,16 @@ impl Hotkey {
         }
     }
 
+    pub fn ctrl_alt_s() -> Self {
+        Self {
+            ctrl: true,
+            alt: true,
+            shift: false,
+            win: false,
+            vk: 0x53,
+        }
+    }
+
     pub fn display(&self) -> String {
         let mut parts = Vec::new();
         if self.ctrl {
@@ -233,5 +243,6 @@ mod tests {
     #[test]
     fn combo_displays_in_lightshot_order() {
         assert_eq!(Hotkey::ctrl_shift_s().display(), "Ctrl + Shift + S");
+        assert_eq!(Hotkey::ctrl_alt_s().display(), "Ctrl + Alt + S");
     }
 }

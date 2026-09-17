@@ -60,20 +60,14 @@ pub struct Config {
     #[serde(default = "default_jpeg_quality")]
     pub jpeg_quality: u8,
 
-    #[serde(default = "Hotkey::print_screen_default")]
+    #[serde(default = "Hotkey::ctrl_shift_s")]
     pub hotkey_capture: Hotkey,
     #[serde(default = "default_true")]
     pub hotkey_capture_enabled: bool,
-    #[serde(default = "Hotkey::ctrl_shift_s")]
+    #[serde(default = "Hotkey::ctrl_alt_s")]
     pub hotkey_save_fullscreen: Hotkey,
     #[serde(default)]
     pub hotkey_save_fullscreen_enabled: bool,
-}
-
-impl Hotkey {
-    fn print_screen_default() -> Self {
-        Self::PRINT_SCREEN
-    }
 }
 
 impl Default for Config {
@@ -94,9 +88,9 @@ impl Default for Config {
             last_selection: None,
             output_format: OutputFormat::Png,
             jpeg_quality: 90,
-            hotkey_capture: Hotkey::PRINT_SCREEN,
+            hotkey_capture: Hotkey::ctrl_shift_s(),
             hotkey_capture_enabled: true,
-            hotkey_save_fullscreen: Hotkey::ctrl_shift_s(),
+            hotkey_save_fullscreen: Hotkey::ctrl_alt_s(),
             hotkey_save_fullscreen_enabled: false,
         }
     }
@@ -207,7 +201,7 @@ stroke_thickness = 2.0
         let cfg: Config = toml::from_str(toml).unwrap();
         assert_eq!(cfg.save_dir, "C:\\shots");
         assert!(cfg.autostart);
-        assert_eq!(cfg.hotkey_capture, Hotkey::PRINT_SCREEN);
+        assert_eq!(cfg.hotkey_capture, Hotkey::ctrl_shift_s());
         assert_eq!(cfg.output_format, OutputFormat::Png);
     }
 

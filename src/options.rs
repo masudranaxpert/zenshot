@@ -445,14 +445,16 @@ impl OptionsApp {
         ui.add_space(6.0);
         if ui
             .add(
-                egui::Button::new(RichText::new("Use Print Screen").color(INK))
+                egui::Button::new(RichText::new("Reset to defaults").color(INK))
                     .fill(Color32::WHITE)
                     .stroke(Stroke::new(1.0_f32, HAIRLINE)),
             )
             .clicked()
         {
-            self.config.hotkey_capture = Hotkey::PRINT_SCREEN;
+            self.config.hotkey_capture = Hotkey::ctrl_shift_s();
             self.config.hotkey_capture_enabled = true;
+            self.config.hotkey_save_fullscreen = Hotkey::ctrl_alt_s();
+            self.config.hotkey_save_fullscreen_enabled = false;
             self.listening = None;
         }
     }
@@ -592,11 +594,9 @@ fn hotkey_row(
     listening_slot: &mut Option<ListenTarget>,
 ) {
     ui.horizontal(|ui| {
-        ui.add_sized(Vec2::new(16.0, 20.0), egui::Checkbox::new(enabled, ""));
-        let label_resp = ui.add_enabled(
-            *enabled,
-            egui::Label::new(RichText::new(label).color(if *enabled { INK } else { INK_MUTED }))
-                .sense(Sense::click()),
+        ui.checkbox(
+            enabled,
+            RichText::new(label).color(if *enabled { INK } else { INK_MUTED }),
         );
         // Anchor the keycap to the card's right edge by measuring it first —
         // a right-to-left sub-layout overflows the row it lives in.
@@ -617,7 +617,7 @@ fn hotkey_row(
             ui.add_space(gap);
         }
         let chip = keycap(ui, &caption, armed && *enabled, *enabled);
-        if chip.clicked() || (label_resp.clicked() && *enabled) {
+        if chip.clicked() && *enabled {
             *listening_slot = Some(target);
         }
     });
