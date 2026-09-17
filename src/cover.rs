@@ -187,13 +187,27 @@ fn get_overlay_hwnd() -> HWND {
 
 /// eframe 0.29 shows its window before the first buffer swap. Cloaking keeps
 /// that incomplete surface out of composition without stopping its rendering.
+/// Clears the HWND cache first — winit's window creation is slightly async so
+/// the previous lookup might have cached a wrong or null handle.
 pub fn prepare_overlay() {
+    // Force a fresh FindWindowW every capture session; the cached value from a
+    // prior process exit could be a dangling handle.
+    OVERLAY_HWND.store(0, Ordering::Relaxed);
+
     unsafe {
         use windows_sys::Win32::Graphics::Dwm::{
             DwmSetWindowAttribute, DWMWA_CLOAK, DWMWA_TRANSITIONS_FORCEDISABLED,
         };
-        let hwnd = get_overlay_hwnd();
-        if !hwnd.is_null() {
+        // Retry up to 5 times with 1ms sleeps — winit registers the HWND
+        // slightly after eframe's creation callback returns.
+        let hwnd = (0..5).find_map(|i| {
+            if i > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let h = get_overlay_hwnd();
+            if h.is_null() { None } else { Some(h) }
+        });
+        if let Some(hwnd) = hwnd {
             let enabled = 1i32;
             for attribute in [DWMWA_TRANSITIONS_FORCEDISABLED, DWMWA_CLOAK] {
                 let _ = DwmSetWindowAttribute(hwnd, attribute as u32,
@@ -237,15 +251,19 @@ pub fn reveal_overlay() {
 }
 
 /// Hide the overlay the same frame Copy/Esc is pressed, before crop/clipboard work.
+/// Two DwmFlush calls drain two composition frames: the last visible frame and
+/// the first hidden frame, so the desktop is fully redrawn before we return.
 pub fn hide_overlay_windows() {
     unsafe {
         use windows_sys::Win32::Graphics::Dwm::{DwmFlush, DwmSetWindowAttribute, DWMWA_CLOAK};
         let gl = get_overlay_hwnd();
         if !gl.is_null() {
-            // Instantly cloak so DWM drops the overlay in 0ms without teardown stutter
+            // Cloak first — DWM removes the window from composition immediately,
+            // before the next vertical blank.
             let enabled = 1i32;
             let _ = DwmSetWindowAttribute(gl, DWMWA_CLOAK as u32,
                 (&enabled as *const i32).cast(), mem::size_of_val(&enabled) as u32);
+            let _ = DwmFlush(); // wait for the cloaked frame to commit
             ShowWindow(gl, SW_HIDE);
         }
         let class = wide(CLASS);
@@ -254,9 +272,12 @@ pub fn hide_overlay_windows() {
             ShowWindow(cover, SW_HIDE);
         }
         SetCursor(LoadCursorW(ptr::null_mut(), IDC_ARROW));
-        let _ = DwmFlush();
+        let _ = DwmFlush(); // drain the fully-hidden frame
+        // Invalidate cache so the next session always finds its own HWND.
+        OVERLAY_HWND.store(0, Ordering::Relaxed);
     }
 }
+
 
 pub fn show_overlay_windows() {
     unsafe {
