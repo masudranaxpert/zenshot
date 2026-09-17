@@ -1,4 +1,4 @@
-# ⚡ ZenShot
+# ZenShot
 
 > Ultra-fast, featherlight screen capture utility with zero disk I/O.  
 > Inspired by Lightshot, rebuilt for modern **Windows**, **Linux**, and **macOS**.
@@ -8,18 +8,18 @@
 
 ---
 
-## ✨ Features
+## Features
 
-- **⚡ Zero Disk I/O:** Captures and copies directly to clipboard entirely in RAM.
-- **🎯 Precision Selection:** Freely drag, resize, and fine-tune capture boundaries with live dimensions.
-- **🎨 Rich Annotations:** Pen, Marker, Line, Arrow, Rectangle, Inline Text, and Color Palette.
-- **🚀 Native Performance:** Written in Rust — instant startup, zero background bloat, and smooth DWM integration.
-- **🔔 Instant Feedback:** Desktop notifications for clipboard copy and fullscreen saves.
-- **⚙️ Configurable:** Customize hotkeys, save directory, PNG/JPEG quality, and autostart.
+- **Zero Disk I/O:** Captures and copies directly to clipboard entirely in RAM.
+- **Precision Selection:** Freely drag, resize, and fine-tune capture boundaries with live dimensions.
+- **Rich Annotations:** Pen, Marker, Line, Arrow, Rectangle, Inline Text, and Color Palette.
+- **Native Performance:** Written in Rust — instant startup, zero background bloat, and smooth DWM integration.
+- **Instant Feedback:** Desktop notifications for clipboard copy and fullscreen saves.
+- **Configurable:** Customize hotkeys, save directory, PNG/JPEG quality, and autostart.
 
 ---
 
-## ⌨️ Default Shortcuts
+## Default Shortcuts
 
 | Shortcut | Action |
 | :--- | :--- |
@@ -35,7 +35,7 @@
 
 ---
 
-## 📦 Installation
+## Installation
 
 ### Windows
 Download the latest `zenshot-setup-<version>.exe` or portable `.zip` from **[Releases](https://github.com/masudranaxpert/zenshot/releases)**.
@@ -52,7 +52,7 @@ sudo apt-get install -f
 
 ---
 
-## 🛠️ CLI Usage
+## CLI Usage
 
 ```bash
 zenshot               # Start daemon / overlay
@@ -63,7 +63,7 @@ zenshot --version     # Display version
 
 ---
 
-## 📄 License
+## License
 
 Distributed under the [MIT License](LICENSE).
 
