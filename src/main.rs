@@ -114,18 +114,25 @@ fn overlay_native_options(screen_image: &image::RgbaImage) -> eframe::NativeOpti
     let height = screen_image.height() as f32;
     let (logical_w, logical_h) = overlay_logical_size(width, height);
 
+    let mut builder = ViewportBuilder::default()
+        .with_title("ZenShot")
+        .with_decorations(false)
+        .with_resizable(false)
+        .with_taskbar(false)
+        .with_always_on_top()
+        .with_fullscreen(false)
+        .with_position(eframe::egui::pos2(0.0, 0.0))
+        .with_inner_size(eframe::egui::vec2(logical_w, logical_h));
+
+    #[cfg(windows)]
+    {
+        builder = builder.with_visible(false);
+    }
+
     eframe::NativeOptions {
         persist_window: false,
         dithering: false,
-        viewport: ViewportBuilder::default()
-            .with_title("ZenShot")
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_taskbar(false)
-            .with_always_on_top()
-            .with_fullscreen(false)
-            .with_position(eframe::egui::pos2(0.0, 0.0))
-            .with_inner_size(eframe::egui::vec2(logical_w, logical_h)),
+        viewport: builder,
         ..Default::default()
     }
 }

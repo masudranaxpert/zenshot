@@ -207,13 +207,31 @@ pub fn prepare_overlay() {
 pub fn reveal_overlay() {
     unsafe {
         use windows_sys::Win32::Graphics::Dwm::{DwmFlush, DwmSetWindowAttribute, DWMWA_CLOAK};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetForegroundWindow, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE,
+            SWP_SHOWWINDOW, SW_SHOW,
+        };
         let hwnd = get_overlay_hwnd();
         if !hwnd.is_null() {
             let disabled = 0i32;
-            let _ = DwmSetWindowAttribute(hwnd, DWMWA_CLOAK as u32,
-                (&disabled as *const i32).cast(), mem::size_of_val(&disabled) as u32);
-            let _ = DwmFlush();
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_CLOAK as u32,
+                (&disabled as *const i32).cast(),
+                mem::size_of_val(&disabled) as u32,
+            );
+            ShowWindow(hwnd, SW_SHOW);
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            );
             SetForegroundWindow(hwnd);
+            let _ = DwmFlush();
         }
     }
 }

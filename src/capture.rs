@@ -32,8 +32,6 @@ fn capture_gdi(
         );
 
         let hdc_screen = GetDC(std::ptr::null_mut());
-        // Primary monitor only: the overlay is a single fullscreen window, so the
-        // capture has to match its bounds for the crop math to line up.
         let width = GetSystemMetrics(SM_CXSCREEN);
         let height = GetSystemMetrics(SM_CYSCREEN);
 
@@ -82,15 +80,32 @@ fn capture_gdi(
             None
         };
 
-        // Win32 GDI outputs BGRA; swap B and R channels to RGBA in RAM
-        for chunk in raw.chunks_exact_mut(4) {
-            chunk.swap(0, 2);
-            chunk[3] = 255;
+        // Win32 GDI outputs BGRA; swap B and R channels to RGBA in RAM.
+        // Operating on 32-bit words is an order of magnitude faster than byte chunk swaps.
+        let pixels: &mut [u32] =
+            std::slice::from_raw_parts_mut(raw.as_mut_ptr() as *mut u32, (width * height) as usize);
+        for p in pixels.iter_mut() {
+            let val = *p;
+            *p = (val & 0x0000_FF00)
+                | ((val & 0x00FF_0000) >> 16)
+                | ((val & 0x0000_00FF) << 16)
+                | 0xFF00_0000;
         }
 
         let image = RgbaImage::from_raw(width as u32, height as u32, raw)
             .ok_or_else(|| "Failed to construct in-memory image buffer".to_string())?;
         Ok((image, cover))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_capture_screen_returns_valid_image() {
+        let img = capture_screen(false).unwrap();
+        assert!(img.width() > 0 && img.height() > 0);
     }
 }
 
