@@ -17,6 +17,7 @@ pub struct Hotkey {
 }
 
 impl Hotkey {
+    #[allow(dead_code)]
     pub const PRINT_SCREEN: Self = Self {
         ctrl: false,
         alt: false,
