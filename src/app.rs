@@ -658,6 +658,7 @@ impl ZenShotApp {
             self.active_text_pos = None;
             self.text_input.clear();
             self.vanished = false;
+            self.screen_image = RgbaImage::new(0, 0);
         } else {
             std::process::exit(0);
         }
