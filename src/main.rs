@@ -85,7 +85,12 @@ fn run_capture() -> eframe::Result<()> {
         return Ok(());
     }
 
-    // Cold capture fallback: spawn a background warm instance for subsequent captures.
+    // Cold capture fallback: spawn a background warm instance for subsequent captures (non-Wayland).
+    #[cfg(not(windows))]
+    if !is_wayland() {
+        spawn_warm_process();
+    }
+    #[cfg(windows)]
     spawn_warm_process();
 
     let t0 = std::time::Instant::now();
@@ -172,6 +177,12 @@ fn run_warm() -> eframe::Result<()> {
     #[cfg(windows)]
     attach_parent_console();
 
+    #[cfg(not(windows))]
+    if is_wayland() {
+        eprintln!("ZenShot: warm mode is not supported on Wayland; using per-capture mode.");
+        return Ok(());
+    }
+
     let _guard = instance::try_acquire("Local\\ZenShotWarm");
     if _guard.is_none() {
         return Ok(());
@@ -255,7 +266,17 @@ fn run_warm() -> eframe::Result<()> {
     )
 }
 
+#[cfg(not(windows))]
+pub fn is_wayland() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var("XDG_SESSION_TYPE").map(|s| s == "wayland").unwrap_or(false)
+}
+
 fn spawn_warm_process() {
+    #[cfg(not(windows))]
+    if is_wayland() {
+        return;
+    }
     let Ok(exe) = std::env::current_exe() else {
         return;
     };

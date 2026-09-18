@@ -1471,7 +1471,14 @@ impl eframe::App for ZenShotApp {
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 1.0]
+        #[cfg(windows)]
+        {
+            [0.0, 0.0, 0.0, 1.0]
+        }
+        #[cfg(not(windows))]
+        {
+            [0.0, 0.0, 0.0, 0.0]
+        }
     }
 }
 

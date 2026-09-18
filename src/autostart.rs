@@ -108,6 +108,12 @@ mod linux_impl {
         };
 
         if on {
+            if crate::is_wayland() {
+                if path.exists() {
+                    let _ = fs::remove_file(&path);
+                }
+                return Ok(());
+            }
             if let Some(parent) = path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
@@ -132,6 +138,9 @@ mod linux_impl {
 
     #[allow(dead_code)]
     pub fn is_enabled() -> bool {
+        if crate::is_wayland() {
+            return false;
+        }
         autostart_path().map(|p| p.exists()).unwrap_or(false)
     }
 }
