@@ -69,6 +69,7 @@ fn main() -> eframe::Result<()> {
 }
 
 fn run_capture() -> eframe::Result<()> {
+    let t0 = std::time::Instant::now();
     let _guard = instance::try_acquire("Local\\ZenShotCapture");
     if cfg!(windows) && _guard.is_none() {
         return Ok(());
@@ -79,17 +80,20 @@ fn run_capture() -> eframe::Result<()> {
 
     let config = Config::load_or_default();
 
+    #[cfg(windows)]
+    let native_options = overlay_native_options(None);
+
+    #[cfg(not(windows))]
     let screen_image = match capture::capture_screen(config.capture_cursor) {
         Ok(img) => img,
         Err(err) => {
             eprintln!("Error capturing screen: {err}");
-            #[cfg(not(windows))]
             eprintln!("On Wayland, allow the screenshot permission if a portal dialog appears.");
             return Ok(());
         }
     };
-
-    let native_options = overlay_native_options(&screen_image);
+    #[cfg(not(windows))]
+    let native_options = overlay_native_options(Some(&screen_image));
 
     eframe::run_native(
         "ZenShot",
@@ -123,21 +127,29 @@ fn run_capture() -> eframe::Result<()> {
                                 &cloak as *const _ as *const _,
                                 std::mem::size_of::<i32>() as u32,
                             );
+
+                            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                                LoadCursorW, SetClassLongPtrW, GCLP_HCURSOR, IDC_CROSS,
+                            };
+                            let cross = LoadCursorW(std::ptr::null_mut(), IDC_CROSS);
+                            if !cross.is_null() {
+                                SetClassLongPtrW(win_hwnd, GCLP_HCURSOR, cross as _);
+                            }
                         }
                     }
                 }
             }
 
             #[cfg(windows)]
-            let app = ZenShotApp::new(config, screen_image, &cc.egui_ctx, hwnd, prev_foreground);
+            let app = ZenShotApp::new(config, None, &cc.egui_ctx, hwnd, prev_foreground, t0);
             #[cfg(not(windows))]
-            let app = ZenShotApp::new(config, screen_image, &cc.egui_ctx);
+            let app = ZenShotApp::new(config, Some(screen_image), &cc.egui_ctx, t0);
             Ok(Box::new(app))
         }),
     )
 }
 
-fn overlay_native_options(screen_image: &image::RgbaImage) -> eframe::NativeOptions {
+fn overlay_native_options(screen_image: Option<&image::RgbaImage>) -> eframe::NativeOptions {
     let scale = display_scale_factor().max(1.0);
 
     #[cfg(windows)]
@@ -148,7 +160,8 @@ fn overlay_native_options(screen_image: &image::RgbaImage) -> eframe::NativeOpti
     };
     #[cfg(not(windows))]
     let (origin_x, origin_y, width, height) = {
-        (0.0_f32, 0.0_f32, screen_image.width() as f32, screen_image.height() as f32)
+        let (w, h) = screen_image.map(|img| (img.width() as f32, img.height() as f32)).unwrap_or((1920.0, 1080.0));
+        (0.0_f32, 0.0_f32, w, h)
     };
 
     let (logical_w, logical_h) = (width / scale, height / scale);

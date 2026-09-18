@@ -317,6 +317,7 @@ pub struct ZenShotApp {
     export_error: Option<String>,
     vanished: bool,
     frame_count: u32,
+    t0: std::time::Instant,
     #[cfg(windows)]
     hwnd: isize,
     #[cfg(windows)]
@@ -327,10 +328,11 @@ impl ZenShotApp {
     #[cfg(windows)]
     pub fn new(
         config: Config,
-        screen_image: RgbaImage,
+        screen_image: Option<RgbaImage>,
         ctx: &egui::Context,
         hwnd: isize,
         prev_foreground: isize,
+        t0: std::time::Instant,
     ) -> Self {
         let selection = if config.keep_selection {
             config.last_selection.and_then(|[x, y, w, h]| {
@@ -344,16 +346,21 @@ impl ZenShotApp {
             None
         };
 
-        let size = [screen_image.width() as usize, screen_image.height() as usize];
-        let pixels: Vec<egui::Color32> =
-            bytemuck::cast_slice::<u8, egui::Color32>(screen_image.as_raw()).to_vec();
-        let color_image = egui::ColorImage { size, pixels };
-        let texture = ctx.load_texture("desktop", color_image, egui::TextureOptions::NEAREST);
+        let (screen_image, texture) = if let Some(img) = screen_image {
+            let size = [img.width() as usize, img.height() as usize];
+            let pixels: Vec<egui::Color32> =
+                bytemuck::cast_slice::<u8, egui::Color32>(img.as_raw()).to_vec();
+            let color_image = egui::ColorImage { size, pixels };
+            let tex = ctx.load_texture("desktop", color_image, egui::TextureOptions::NEAREST);
+            (img, Some(tex))
+        } else {
+            (RgbaImage::new(0, 0), None)
+        };
 
         Self {
             config,
             screen_image,
-            texture: Some(texture),
+            texture,
             icons: None,
             selection,
             drag_state: DragState::None,
@@ -366,13 +373,19 @@ impl ZenShotApp {
             export_error: None,
             vanished: false,
             frame_count: 0,
+            t0,
             hwnd,
             prev_foreground,
         }
     }
 
     #[cfg(not(windows))]
-    pub fn new(config: Config, screen_image: RgbaImage, ctx: &egui::Context) -> Self {
+    pub fn new(
+        config: Config,
+        screen_image: Option<RgbaImage>,
+        ctx: &egui::Context,
+        t0: std::time::Instant,
+    ) -> Self {
         let selection = if config.keep_selection {
             config.last_selection.and_then(|[x, y, w, h]| {
                 if w > 6.0 && h > 6.0 {
@@ -385,16 +398,21 @@ impl ZenShotApp {
             None
         };
 
-        let size = [screen_image.width() as usize, screen_image.height() as usize];
-        let pixels: Vec<egui::Color32> =
-            bytemuck::cast_slice::<u8, egui::Color32>(screen_image.as_raw()).to_vec();
-        let color_image = egui::ColorImage { size, pixels };
-        let texture = ctx.load_texture("desktop", color_image, egui::TextureOptions::NEAREST);
+        let (screen_image, texture) = if let Some(img) = screen_image {
+            let size = [img.width() as usize, img.height() as usize];
+            let pixels: Vec<egui::Color32> =
+                bytemuck::cast_slice::<u8, egui::Color32>(img.as_raw()).to_vec();
+            let color_image = egui::ColorImage { size, pixels };
+            let tex = ctx.load_texture("desktop", color_image, egui::TextureOptions::NEAREST);
+            (img, Some(tex))
+        } else {
+            (RgbaImage::new(0, 0), None)
+        };
 
         Self {
             config,
             screen_image,
-            texture: Some(texture),
+            texture,
             icons: None,
             selection,
             drag_state: DragState::None,
@@ -407,6 +425,7 @@ impl ZenShotApp {
             export_error: None,
             vanished: false,
             frame_count: 0,
+            t0,
         }
     }
 
@@ -735,6 +754,32 @@ fn icon_button(ui: &mut egui::Ui, icon: &IconPair, size: Vec2, active: bool, tip
 
 impl eframe::App for ZenShotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Capture live screen in Frame 1 while window is still DWM-cloaked.
+        // This ensures the screenshot is ~16ms fresh when uncloaked on Frame 2,
+        // eliminating the 300ms stale-frame caret blink/tooltip disparity.
+        if self.texture.is_none() {
+            let t_cap = std::time::Instant::now();
+            match crate::capture::capture_screen(self.config.capture_cursor) {
+                Ok(img) => {
+                    let size = [img.width() as usize, img.height() as usize];
+                    let pixels: Vec<egui::Color32> =
+                        bytemuck::cast_slice::<u8, egui::Color32>(img.as_raw()).to_vec();
+                    let color_image = egui::ColorImage { size, pixels };
+                    self.texture = Some(ctx.load_texture(
+                        "desktop",
+                        color_image,
+                        egui::TextureOptions::NEAREST,
+                    ));
+                    self.screen_image = img;
+                    eprintln!("[ZenShot PERF] Frame 1 capture: {:?}", t_cap.elapsed());
+                }
+                Err(err) => {
+                    eprintln!("Error capturing screen: {err}");
+                    self.quit(ctx);
+                }
+            }
+        }
+
         let screen_rect = ctx.screen_rect();
         if matches!(self.drag_state, DragState::None) {
             if let Some(sel) = self.selection {
@@ -1161,6 +1206,7 @@ impl eframe::App for ZenShotApp {
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            eprintln!("[ZenShot PERF] hotkey→visible: {:?}", self.t0.elapsed());
         }
     }
 
