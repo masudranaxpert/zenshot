@@ -81,7 +81,9 @@ fn run_capture() -> eframe::Result<()> {
             windows_sys::Win32::UI::WindowsAndMessaging::ASFW_ANY,
         );
     }
+    let t_ipc = std::time::Instant::now();
     if ipc::send_command(ipc::IpcCommand::Capture) {
+        eprintln!("[ZenShot PERF] IPC trigger roundtrip: {:?}", t_ipc.elapsed());
         return Ok(());
     }
 
@@ -355,6 +357,7 @@ fn overlay_native_options(_screen_image: Option<&image::RgbaImage>) -> eframe::N
         .with_decorations(false)
         .with_resizable(false)
         .with_always_on_top()
+        .with_transparent(true)
         .with_fullscreen(true);
 
     eframe::NativeOptions {
@@ -437,10 +440,23 @@ fn run_daemon() -> eframe::Result<()> {
 fn attach_parent_console() {
     // Release builds are a GUI subsystem binary, so Explorer would otherwise
     // allocate a console. Attaching to an already-open terminal keeps
-    // `zenshot --help` visible when launched from cmd/PowerShell.
+    // `zenshot --help` and PERF stats visible when launched from cmd/PowerShell.
     const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
     unsafe {
-        let _ = windows_sys::Win32::System::Console::AttachConsole(ATTACH_PARENT_PROCESS);
+        use windows_sys::Win32::System::Console::{
+            AttachConsole, GetStdHandle, SetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+        };
+        let stdout_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+        if stdout_handle.is_null() || stdout_handle == (-1isize as _) {
+            if AttachConsole(ATTACH_PARENT_PROCESS) != 0 {
+                use std::os::windows::io::IntoRawHandle;
+                if let Ok(file) = std::fs::OpenOptions::new().write(true).open("CONOUT$") {
+                    let handle = file.into_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
+                    SetStdHandle(STD_OUTPUT_HANDLE, handle);
+                    SetStdHandle(STD_ERROR_HANDLE, handle);
+                }
+            }
+        }
     }
 }
 

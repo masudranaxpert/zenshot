@@ -300,6 +300,14 @@ enum DragState {
     DrawingPath(Vec<Pos2>),
 }
 
+#[cfg(not(windows))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingExport {
+    Copy,
+    Save,
+    Print,
+}
+
 /// Main application state for ZenShot.
 pub struct ZenShotApp {
     config: Config,
@@ -323,6 +331,8 @@ pub struct ZenShotApp {
     warmed_up: bool,
     trigger_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     quit_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    #[cfg(not(windows))]
+    pending_export: Option<PendingExport>,
     #[cfg(windows)]
     hwnd: isize,
     #[cfg(windows)]
@@ -480,6 +490,7 @@ impl ZenShotApp {
             warmed_up: true,
             trigger_flag: None,
             quit_flag: None,
+            pending_export: None,
         }
     }
 
@@ -516,6 +527,7 @@ impl ZenShotApp {
             warmed_up: false,
             trigger_flag: Some(trigger_flag),
             quit_flag: Some(quit_flag),
+            pending_export: None,
         }
     }
 
@@ -621,6 +633,10 @@ impl ZenShotApp {
     /// restores foreground, and resets state to await the next IPC capture trigger.
     fn quit(&mut self, ctx: &egui::Context) {
         self.vanish(ctx);
+        #[cfg(not(windows))]
+        {
+            self.pending_export = None;
+        }
         if self.is_warm {
             if let Some(trigger_flag) = &self.trigger_flag {
                 trigger_flag.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -665,14 +681,7 @@ impl ZenShotApp {
         }
     }
 
-    /// Saves cropped image to configured path and exits immediately.
-    /// With nothing selected this is a no-op, matching Lightshot.
-    fn action_save(&mut self, ctx: &egui::Context, screen_rect: Rect) {
-        if self.selection.is_none() {
-            return;
-        }
-        self.commit_pending_text();
-        self.vanish(ctx);
+    fn execute_save(&mut self, ctx: &egui::Context, screen_rect: Rect) {
         let Some(img) = self.crop_current_selection(ctx, screen_rect) else {
             self.fail_export(ctx, "Nothing to save".into());
             return;
@@ -689,13 +698,7 @@ impl ZenShotApp {
         }
     }
 
-    /// Copies cropped image directly to clipboard in RAM and exits immediately.
-    fn action_copy(&mut self, ctx: &egui::Context, screen_rect: Rect) {
-        if self.selection.is_none() {
-            return;
-        }
-        self.commit_pending_text();
-        self.vanish(ctx);
+    fn execute_copy(&mut self, ctx: &egui::Context, screen_rect: Rect) {
         let Some(img) = self.crop_current_selection(ctx, screen_rect) else {
             self.fail_export(ctx, "Nothing to copy".into());
             return;
@@ -712,15 +715,7 @@ impl ZenShotApp {
         }
     }
 
-    /// Hands the cropped image to the system printer and exits.
-    /// Printing is the one path that has to touch disk, since both print
-    /// backends take a file rather than a stream.
-    fn action_print(&mut self, ctx: &egui::Context, screen_rect: Rect) {
-        if self.selection.is_none() {
-            return;
-        }
-        self.commit_pending_text();
-        self.vanish(ctx);
+    fn execute_print(&mut self, ctx: &egui::Context, screen_rect: Rect) {
         let Some(img) = self.crop_current_selection(ctx, screen_rect) else {
             self.fail_export(ctx, "Nothing to print".into());
             return;
@@ -734,6 +729,75 @@ impl ZenShotApp {
             Ok(()) => self.quit(ctx),
             Err(err) => self.fail_export(ctx, format!("Print failed: {err}")),
         }
+    }
+
+    #[cfg(not(windows))]
+    fn do_export(&mut self, ctx: &egui::Context, screen_rect: Rect, action: PendingExport) {
+        match action {
+            PendingExport::Copy => self.execute_copy(ctx, screen_rect),
+            PendingExport::Save => self.execute_save(ctx, screen_rect),
+            PendingExport::Print => self.execute_print(ctx, screen_rect),
+        }
+    }
+
+    /// Saves cropped image to configured path and exits immediately.
+    /// With nothing selected this is a no-op, matching Lightshot.
+    fn action_save(&mut self, ctx: &egui::Context, screen_rect: Rect) {
+        if self.selection.is_none() {
+            return;
+        }
+        self.commit_pending_text();
+        self.vanish(ctx);
+
+        #[cfg(not(windows))]
+        {
+            self.pending_export = Some(PendingExport::Save);
+            ctx.request_repaint();
+            return;
+        }
+
+        #[cfg(windows)]
+        self.execute_save(ctx, screen_rect);
+    }
+
+    /// Copies cropped image directly to clipboard in RAM and exits immediately.
+    fn action_copy(&mut self, ctx: &egui::Context, screen_rect: Rect) {
+        if self.selection.is_none() {
+            return;
+        }
+        self.commit_pending_text();
+        self.vanish(ctx);
+
+        #[cfg(not(windows))]
+        {
+            self.pending_export = Some(PendingExport::Copy);
+            ctx.request_repaint();
+            return;
+        }
+
+        #[cfg(windows)]
+        self.execute_copy(ctx, screen_rect);
+    }
+
+    /// Hands the cropped image to the system printer and exits.
+    /// Printing is the one path that has to touch disk, since both print
+    /// backends take a file rather than a stream.
+    fn action_print(&mut self, ctx: &egui::Context, screen_rect: Rect) {
+        if self.selection.is_none() {
+            return;
+        }
+        self.commit_pending_text();
+        self.vanish(ctx);
+
+        #[cfg(not(windows))]
+        {
+            self.pending_export = Some(PendingExport::Print);
+            ctx.request_repaint();
+            return;
+        }
+
+        #[cfg(windows)]
+        self.execute_print(ctx, screen_rect);
     }
 
     /// Checks if mouse point hits any of the 8 selection handles.
@@ -880,6 +944,13 @@ fn icon_button(ui: &mut egui::Ui, icon: &IconPair, size: Vec2, active: bool, tip
 
 impl eframe::App for ZenShotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(not(windows))]
+        if let Some(action) = self.pending_export.take() {
+            let screen_rect = ctx.screen_rect();
+            self.do_export(ctx, screen_rect, action);
+            return;
+        }
+
         // In warm mode, handle IPC quit and capture triggers.
         if let Some(quit_flag) = &self.quit_flag {
             if quit_flag.load(std::sync::atomic::Ordering::SeqCst) {
