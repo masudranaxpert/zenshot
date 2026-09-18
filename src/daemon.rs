@@ -58,12 +58,15 @@ fn lock_inner() -> std::sync::MutexGuard<'static, Option<Inner>> {
 
 pub fn run() -> eframe::Result<()> {
     let Some(_guard) = crate::instance::try_acquire("Local\\ZenShotDaemon") else {
+        trigger_capture();
         return Ok(());
     };
 
     let config = Config::load_or_default();
     // Config is the source of truth: ticking Options off must also clear the Run key.
     let _ = crate::autostart::set_enabled(config.autostart);
+
+    spawn_self("--warm");
 
     unsafe { message_loop(config) }
 }
@@ -318,6 +321,17 @@ fn spawn_self(arg: &str) {
     }
 }
 
+fn trigger_capture() {
+    unsafe {
+        let _ = windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+            windows_sys::Win32::UI::WindowsAndMessaging::ASFW_ANY,
+        );
+    }
+    if !crate::ipc::send_command(crate::ipc::IpcCommand::Capture) {
+        spawn_self("--capture");
+    }
+}
+
 fn save_fullscreen_now() {
     std::thread::spawn(|| {
         let config = Config::load_or_default();
@@ -367,7 +381,7 @@ fn show_menu(hwnd: HWND) {
 
 fn handle_command(id: usize) {
     match id {
-        ID_CAPTURE => spawn_self("--capture"),
+        ID_CAPTURE => trigger_capture(),
         ID_OPTIONS => spawn_self("--options"),
         ID_HELP => {
             let _ = webbrowser::open(HELP_URL);
@@ -387,6 +401,7 @@ fn handle_command(id: usize) {
             );
         },
         ID_EXIT => {
+            let _ = crate::ipc::send_command(crate::ipc::IpcCommand::Quit);
             let hwnd = lock_inner().as_ref().map(|i| i.hwnd).unwrap_or(ptr::null_mut());
             if !hwnd.is_null() {
                 unsafe {
@@ -405,13 +420,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             if event == WM_RBUTTONUP {
                 show_menu(hwnd);
             } else if event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK {
-                spawn_self("--capture");
+                trigger_capture();
             }
             0
         }
         WM_HOTKEY => {
             match wparam as i32 {
-                HOTKEY_CAPTURE => spawn_self("--capture"),
+                HOTKEY_CAPTURE => trigger_capture(),
                 HOTKEY_SAVE => save_fullscreen_now(),
                 _ => {}
             }
@@ -447,6 +462,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             0
         }
         WM_DESTROY => {
+            let _ = crate::ipc::send_command(crate::ipc::IpcCommand::Quit);
             PostQuitMessage(0);
             0
         }

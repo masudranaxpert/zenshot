@@ -398,12 +398,16 @@ impl OptionsApp {
 
         #[cfg(not(windows))]
         card(ui, "Linux", |ui| {
+            ui.checkbox(
+                &mut self.config.legacy_x11_capture,
+                "Legacy X11 direct grab (bypass portal)",
+            );
+            ui.add_space(4.0);
             ui.label(
                 RichText::new(
-                    "Linux does not need a tray process. Bind Ctrl+Shift+S in your desktop \
-                     settings to the command `zenshot`.",
+                    "On X11, direct grab captures instantly without portal dialogs. On Wayland, desktop portal permissions apply.",
                 )
-                .size(12.5)
+                .size(12.0)
                 .color(INK_MUTED),
             );
         });

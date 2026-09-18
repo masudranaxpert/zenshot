@@ -5,6 +5,7 @@ mod autostart;
 mod capture;
 mod clipboard;
 mod config;
+mod ipc;
 
 #[cfg(windows)]
 mod daemon;
@@ -64,6 +65,7 @@ fn main() -> eframe::Result<()> {
             }
             Ok(())
         }
+        Mode::Warm => run_warm(),
         Mode::Capture => run_capture(),
     }
 }
@@ -71,6 +73,17 @@ fn main() -> eframe::Result<()> {
 fn run_capture() -> eframe::Result<()> {
     #[cfg(windows)]
     attach_parent_console();
+
+    // Fast path: if a resident warm instance is listening, trigger capture and return immediately.
+    #[cfg(windows)]
+    unsafe {
+        let _ = windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+            windows_sys::Win32::UI::WindowsAndMessaging::ASFW_ANY,
+        );
+    }
+    if ipc::send_command(ipc::IpcCommand::Capture) {
+        return Ok(());
+    }
 
     let t0 = std::time::Instant::now();
     let _guard = instance::try_acquire("Local\\ZenShotCapture");
@@ -147,6 +160,81 @@ fn run_capture() -> eframe::Result<()> {
             let app = ZenShotApp::new(config, None, &cc.egui_ctx, hwnd, prev_foreground, t0);
             #[cfg(not(windows))]
             let app = ZenShotApp::new(config, Some(screen_image), &cc.egui_ctx, t0);
+            Ok(Box::new(app))
+        }),
+    )
+}
+
+fn run_warm() -> eframe::Result<()> {
+    let _guard = instance::try_acquire("Local\\ZenShotWarm");
+    if _guard.is_none() {
+        return Ok(());
+    }
+
+    let config = Config::load_or_default();
+    let trigger_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let quit_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    let trigger_for_listener = trigger_flag.clone();
+    let quit_for_listener = quit_flag.clone();
+
+    let native_options = overlay_native_options(None);
+
+    eframe::run_native(
+        "ZenShot",
+        native_options,
+        Box::new(move |cc| {
+            #[cfg(windows)]
+            let mut hwnd = 0isize;
+            #[cfg(windows)]
+            {
+                use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                use windows_sys::Win32::Graphics::Dwm::{
+                    DwmSetWindowAttribute, DWMWA_CLOAK, DWMWA_TRANSITIONS_FORCEDISABLED,
+                };
+
+                if let Ok(handle) = cc.window_handle() {
+                    if let RawWindowHandle::Win32(w32) = handle.as_raw() {
+                        let win_hwnd = w32.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+                        hwnd = win_hwnd as isize;
+                        let disable: i32 = 1;
+                        let cloak: i32 = 1;
+                        unsafe {
+                            let _ = DwmSetWindowAttribute(
+                                win_hwnd,
+                                DWMWA_TRANSITIONS_FORCEDISABLED as u32,
+                                &disable as *const _ as *const _,
+                                std::mem::size_of::<i32>() as u32,
+                            );
+                            let _ = DwmSetWindowAttribute(
+                                win_hwnd,
+                                DWMWA_CLOAK as u32,
+                                &cloak as *const _ as *const _,
+                                std::mem::size_of::<i32>() as u32,
+                            );
+
+                            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                                LoadCursorW, SetClassLongPtrW, ShowWindow, GCLP_HCURSOR,
+                                IDC_CROSS, SW_HIDE,
+                            };
+                            ShowWindow(win_hwnd, SW_HIDE);
+                            let cross = LoadCursorW(std::ptr::null_mut(), IDC_CROSS);
+                            if !cross.is_null() {
+                                SetClassLongPtrW(win_hwnd, GCLP_HCURSOR, cross as _);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Err(e) = ipc::start_listener(trigger_for_listener, quit_for_listener, cc.egui_ctx.clone()) {
+                eprintln!("Failed to start ZenShot IPC listener: {e}");
+            }
+
+            #[cfg(windows)]
+            let app = ZenShotApp::new_warm(config, &cc.egui_ctx, hwnd, trigger_flag, quit_flag);
+            #[cfg(not(windows))]
+            let app = ZenShotApp::new_warm(config, &cc.egui_ctx, trigger_flag, quit_flag);
             Ok(Box::new(app))
         }),
     )
@@ -281,6 +369,7 @@ fn enable_dpi() {
 enum Mode {
     Capture,
     Daemon,
+    Warm,
     Options,
     SaveFullscreen,
     PrintConfig,
@@ -318,6 +407,9 @@ impl Mode {
         if args.iter().any(|a| a == "--daemon") {
             return Self::Daemon;
         }
+        if args.iter().any(|a| a == "--warm") {
+            return Self::Warm;
+        }
         if args.iter().any(|a| a == "--save-fullscreen") {
             return Self::SaveFullscreen;
         }
@@ -344,6 +436,7 @@ fn print_help() {
     println!();
     println!("Options:");
     println!("  --capture, -c       Open the region-select overlay");
+    println!("  --warm              Run pre-warmed resident capture listener");
     println!("  --options, -o       Open the settings window");
     println!("  --save-fullscreen   Capture the whole screen and save");
     println!("  --daemon            Stay in the tray (Windows)");

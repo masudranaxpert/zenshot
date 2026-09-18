@@ -68,6 +68,9 @@ pub struct Config {
     pub hotkey_save_fullscreen: Hotkey,
     #[serde(default)]
     pub hotkey_save_fullscreen_enabled: bool,
+    /// Direct grab on X11, bypassing portal dialogs.
+    #[serde(default = "default_true")]
+    pub legacy_x11_capture: bool,
 }
 
 impl Default for Config {
@@ -92,6 +95,7 @@ impl Default for Config {
             hotkey_capture_enabled: true,
             hotkey_save_fullscreen: Hotkey::ctrl_alt_s(),
             hotkey_save_fullscreen_enabled: false,
+            legacy_x11_capture: true,
         }
     }
 }

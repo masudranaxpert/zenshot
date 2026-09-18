@@ -318,6 +318,11 @@ pub struct ZenShotApp {
     vanished: bool,
     frame_count: u32,
     t0: std::time::Instant,
+    is_warm: bool,
+    is_active: bool,
+    warmed_up: bool,
+    trigger_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    quit_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     #[cfg(windows)]
     hwnd: isize,
     #[cfg(windows)]
@@ -374,8 +379,52 @@ impl ZenShotApp {
             vanished: false,
             frame_count: 0,
             t0,
+            is_warm: false,
+            is_active: true,
+            warmed_up: true,
+            trigger_flag: None,
+            quit_flag: None,
             hwnd,
             prev_foreground,
+        }
+    }
+
+    #[cfg(windows)]
+    pub fn new_warm(
+        config: Config,
+        ctx: &egui::Context,
+        hwnd: isize,
+        trigger_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        quit_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        let dummy = egui::ColorImage::example();
+        let texture = ctx.load_texture("desktop", dummy, egui::TextureOptions::NEAREST);
+        let icons = Some(ToolbarIcons::load(ctx));
+
+        Self {
+            config,
+            screen_image: RgbaImage::new(0, 0),
+            texture: Some(texture),
+            icons,
+            selection: None,
+            drag_state: DragState::None,
+            current_tool: Tool::Select,
+            color_index: 0,
+            annotations: Vec::new(),
+            text_input: String::new(),
+            active_text_pos: None,
+            last_pointer: Pos2::ZERO,
+            export_error: None,
+            vanished: false,
+            frame_count: 0,
+            t0: std::time::Instant::now(),
+            is_warm: true,
+            is_active: false,
+            warmed_up: false,
+            trigger_flag: Some(trigger_flag),
+            quit_flag: Some(quit_flag),
+            hwnd,
+            prev_foreground: 0,
         }
     }
 
@@ -426,6 +475,47 @@ impl ZenShotApp {
             vanished: false,
             frame_count: 0,
             t0,
+            is_warm: false,
+            is_active: true,
+            warmed_up: true,
+            trigger_flag: None,
+            quit_flag: None,
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn new_warm(
+        config: Config,
+        ctx: &egui::Context,
+        trigger_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        quit_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        let dummy = egui::ColorImage::example();
+        let texture = ctx.load_texture("desktop", dummy, egui::TextureOptions::NEAREST);
+        let icons = Some(ToolbarIcons::load(ctx));
+
+        Self {
+            config,
+            screen_image: RgbaImage::new(0, 0),
+            texture: Some(texture),
+            icons,
+            selection: None,
+            drag_state: DragState::None,
+            current_tool: Tool::Select,
+            color_index: 0,
+            annotations: Vec::new(),
+            text_input: String::new(),
+            active_text_pos: None,
+            last_pointer: Pos2::ZERO,
+            export_error: None,
+            vanished: false,
+            frame_count: 0,
+            t0: std::time::Instant::now(),
+            is_warm: true,
+            is_active: false,
+            warmed_up: false,
+            trigger_flag: Some(trigger_flag),
+            quit_flag: Some(quit_flag),
         }
     }
 
@@ -504,12 +594,25 @@ impl ZenShotApp {
         }
     }
 
-    /// A hidden window stops pumping events, so a queued `Close` may never be
-    /// applied — and the surviving process keeps the single-instance mutex,
-    /// which silently swallows the next screenshot. Leave for good instead.
-    fn quit(&mut self, ctx: &egui::Context) -> ! {
+    /// In one-shot mode, exits the process. In warm mode, hides the window,
+    /// restores foreground, and resets state to await the next IPC capture trigger.
+    fn quit(&mut self, ctx: &egui::Context) {
         self.vanish(ctx);
-        std::process::exit(0)
+        if self.is_warm {
+            if let Some(trigger_flag) = &self.trigger_flag {
+                trigger_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.is_active = false;
+            self.frame_count = 0;
+            self.selection = None;
+            self.annotations.clear();
+            self.drag_state = DragState::None;
+            self.active_text_pos = None;
+            self.text_input.clear();
+            self.vanished = false;
+        } else {
+            std::process::exit(0);
+        }
     }
 
     /// Active drawing color from palette.
@@ -754,7 +857,89 @@ fn icon_button(ui: &mut egui::Ui, icon: &IconPair, size: Vec2, active: bool, tip
 
 impl eframe::App for ZenShotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Capture live screen in Frame 1 while window is still DWM-cloaked.
+        // In warm mode, handle IPC quit and capture triggers.
+        if let Some(quit_flag) = &self.quit_flag {
+            if quit_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+        }
+
+        if self.is_warm && !self.is_active {
+            if !self.warmed_up {
+                self.warmed_up = true;
+                return;
+            }
+
+            let triggered = self
+                .trigger_flag
+                .as_ref()
+                .map(|f| f.swap(false, std::sync::atomic::Ordering::SeqCst))
+                .unwrap_or(false);
+
+            if !triggered {
+                return;
+            }
+
+            self.t0 = std::time::Instant::now();
+            self.config = Config::load_or_default();
+            #[cfg(windows)]
+            {
+                self.prev_foreground = unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                } as isize;
+            }
+
+            let t_cap = std::time::Instant::now();
+            match crate::capture::capture_screen(self.config.capture_cursor) {
+                Ok(img) => {
+                    let size = [img.width() as usize, img.height() as usize];
+                    let pixels: Vec<egui::Color32> =
+                        bytemuck::cast_slice::<u8, egui::Color32>(img.as_raw()).to_vec();
+                    let color_image = egui::ColorImage { size, pixels };
+                    if let Some(tex) = &mut self.texture {
+                        tex.set(color_image, egui::TextureOptions::NEAREST);
+                    } else {
+                        self.texture = Some(ctx.load_texture(
+                            "desktop",
+                            color_image,
+                            egui::TextureOptions::NEAREST,
+                        ));
+                    }
+                    self.screen_image = img;
+                    eprintln!("[ZenShot PERF] Warm capture + texture set: {:?}", t_cap.elapsed());
+                }
+                Err(err) => {
+                    eprintln!("Error capturing screen: {err}");
+                    self.quit(ctx);
+                    return;
+                }
+            }
+
+            self.is_active = true;
+            self.frame_count = 0;
+            self.selection = if self.config.keep_selection {
+                self.config.last_selection.and_then(|[x, y, w, h]| {
+                    if w > 6.0 && h > 6.0 {
+                        Some(Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h)))
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
+            self.drag_state = DragState::None;
+            self.current_tool = Tool::Select;
+            self.annotations.clear();
+            self.active_text_pos = None;
+            self.text_input.clear();
+            self.export_error = None;
+            self.vanished = false;
+            ctx.request_repaint();
+        }
+
+        // Capture live screen in Frame 1 while window is still DWM-cloaked (cold-start path).
         // This ensures the screenshot is ~16ms fresh when uncloaked on Frame 2,
         // eliminating the 300ms stale-frame caret blink/tooltip disparity.
         if self.texture.is_none() {
@@ -1192,7 +1377,9 @@ impl eframe::App for ZenShotApp {
             #[cfg(windows)]
             unsafe {
                 use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
-                use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    SetForegroundWindow, ShowWindow, SW_SHOW,
+                };
                 if self.hwnd != 0 {
                     let off: i32 = 0;
                     let _ = DwmSetWindowAttribute(
@@ -1201,6 +1388,7 @@ impl eframe::App for ZenShotApp {
                         &off as *const _ as *const _,
                         std::mem::size_of::<i32>() as u32,
                     );
+                    ShowWindow(self.hwnd as _, SW_SHOW);
                     SetForegroundWindow(self.hwnd as _);
                 }
             }
