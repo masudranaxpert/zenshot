@@ -43,6 +43,8 @@ Download the latest `zenshot-setup-<version>.exe` or portable `.zip` from **[Rel
 - Configure via tray icon menu or `zenshot --options`.
 
 ### Linux (Ubuntu / Debian)
+Linux X11 is fully supported; Wayland support is compositor-dependent (desktop portal screenshot protocol).
+
 Download `zenshot_<version>_amd64.deb` from **[Releases](https://github.com/masudranaxpert/zenshot/releases)**:
 ```bash
 sudo dpkg -i zenshot_<version>_amd64.deb

@@ -69,6 +69,9 @@ fn main() -> eframe::Result<()> {
 }
 
 fn run_capture() -> eframe::Result<()> {
+    #[cfg(windows)]
+    attach_parent_console();
+
     let t0 = std::time::Instant::now();
     let _guard = instance::try_acquire("Local\\ZenShotCapture");
     if cfg!(windows) && _guard.is_none() {
@@ -179,6 +182,7 @@ fn overlay_native_options(screen_image: Option<&image::RgbaImage>) -> eframe::Na
         .with_inner_size(eframe::egui::vec2(logical_w, logical_h));
 
     eframe::NativeOptions {
+        vsync: false,
         persist_window: false,
         dithering: false,
         viewport: builder,

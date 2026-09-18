@@ -27,17 +27,6 @@ fn capture_gdi(capture_cursor: bool) -> Result<RgbaImage, String> {
 
         let hdc_screen = GetDC(std::ptr::null_mut());
         let hdc_mem = CreateCompatibleDC(hdc_screen);
-        let hbm = CreateCompatibleBitmap(hdc_screen, width, height);
-        let old_obj = SelectObject(hdc_mem, hbm);
-
-        BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, x, y, SRCCOPY);
-
-        if capture_cursor {
-            draw_cursor(hdc_mem, x, y);
-        }
-
-        // Unselect bitmap from DC before GetDIBits to avoid undefined behavior
-        SelectObject(hdc_mem, old_obj);
 
         let mut bi: BITMAPINFO = std::mem::zeroed();
         bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
@@ -47,45 +36,50 @@ fn capture_gdi(capture_cursor: bool) -> Result<RgbaImage, String> {
         bi.bmiHeader.biBitCount = 32;
         bi.bmiHeader.biCompression = BI_RGB;
 
-        let mut raw = vec![0u8; (width * height * 4) as usize];
-        let scanlines = GetDIBits(
-            hdc_mem,
-            hbm,
-            0,
-            height as u32,
-            raw.as_mut_ptr() as *mut _,
-            &mut bi,
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let hbm = CreateDIBSection(
+            hdc_screen,
+            &bi,
             DIB_RGB_COLORS,
+            &mut bits,
+            std::ptr::null_mut(),
+            0,
         );
 
-        DeleteObject(hbm);
-        DeleteDC(hdc_mem);
-        ReleaseDC(std::ptr::null_mut(), hdc_screen);
-
-        if scanlines == 0 {
-            return Err("GetDIBits returned no scanlines".to_string());
+        if hbm.is_null() || bits.is_null() {
+            DeleteDC(hdc_mem);
+            ReleaseDC(std::ptr::null_mut(), hdc_screen);
+            return Err("CreateDIBSection failed".to_string());
         }
 
-        // Win32 GDI outputs BGRA; swap B and R channels to RGBA in RAM.
-        // Chunk unrolling optimizes auto-vectorization across 32-bit words.
-        let pixels: &mut [u32] =
-            std::slice::from_raw_parts_mut(raw.as_mut_ptr() as *mut u32, (width * height) as usize);
-        for chunk in pixels.chunks_exact_mut(8) {
-            for p in chunk.iter_mut() {
-                let val = *p;
-                *p = (val & 0x0000_FF00)
-                    | ((val & 0x00FF_0000) >> 16)
-                    | ((val & 0x0000_00FF) << 16)
-                    | 0xFF00_0000;
-            }
+        let old_obj = SelectObject(hdc_mem, hbm);
+        BitBlt(hdc_mem, 0, 0, width, height, hdc_screen, x, y, SRCCOPY);
+
+        if capture_cursor {
+            draw_cursor(hdc_mem, x, y);
         }
-        for p in pixels.chunks_exact_mut(8).into_remainder().iter_mut() {
-            let val = *p;
-            *p = (val & 0x0000_FF00)
+
+        GdiFlush();
+
+        // Direct single-pass stream from DIB section into RGBA image buffer:
+        // Win32 GDI writes BGRA; stream-swap B and R channels into RAM with no GetDIBits.
+        let pixel_count = (width * height) as usize;
+        let src = std::slice::from_raw_parts(bits as *const u32, pixel_count);
+        let mut raw = vec![0u8; pixel_count * 4];
+        let dst = std::slice::from_raw_parts_mut(raw.as_mut_ptr() as *mut u32, pixel_count);
+
+        for (s, d) in src.iter().zip(dst.iter_mut()) {
+            let val = *s;
+            *d = (val & 0x0000_FF00)
                 | ((val & 0x00FF_0000) >> 16)
                 | ((val & 0x0000_00FF) << 16)
                 | 0xFF00_0000;
         }
+
+        SelectObject(hdc_mem, old_obj);
+        DeleteObject(hbm);
+        DeleteDC(hdc_mem);
+        ReleaseDC(std::ptr::null_mut(), hdc_screen);
 
         RgbaImage::from_raw(width as u32, height as u32, raw)
             .ok_or_else(|| "Failed to construct in-memory image buffer".to_string())
