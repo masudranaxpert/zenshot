@@ -152,34 +152,35 @@ fn run_capture() -> eframe::Result<()> {
     )
 }
 
-fn overlay_native_options(screen_image: Option<&image::RgbaImage>) -> eframe::NativeOptions {
-    let scale = display_scale_factor().max(1.0);
-
+fn overlay_native_options(_screen_image: Option<&image::RgbaImage>) -> eframe::NativeOptions {
     #[cfg(windows)]
-    let (origin_x, origin_y, width, height) = {
-        let _ = screen_image;
+    let builder = {
+        let scale = display_scale_factor().max(1.0);
+        let _ = _screen_image;
         let (vx, vy, vw, vh) = capture::virtual_screen_bounds();
-        (vx as f32, vy as f32, vw as f32, vh as f32)
+        let (logical_w, logical_h) = (vw as f32 / scale, vh as f32 / scale);
+        let (logical_x, logical_y) = (vx as f32 / scale, vy as f32 / scale);
+
+        ViewportBuilder::default()
+            .with_title("ZenShot")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_taskbar(false)
+            .with_always_on_top()
+            .with_visible(false)
+            .with_transparent(true)
+            .with_position(eframe::egui::pos2(logical_x, logical_y))
+            .with_inner_size(eframe::egui::vec2(logical_w, logical_h))
     };
+
     #[cfg(not(windows))]
-    let (origin_x, origin_y, width, height) = {
-        let (w, h) = screen_image.map(|img| (img.width() as f32, img.height() as f32)).unwrap_or((1920.0, 1080.0));
-        (0.0_f32, 0.0_f32, w, h)
-    };
-
-    let (logical_w, logical_h) = (width / scale, height / scale);
-    let (logical_x, logical_y) = (origin_x / scale, origin_y / scale);
-
     let builder = ViewportBuilder::default()
         .with_title("ZenShot")
+        .with_app_id("ZenShot")
         .with_decorations(false)
         .with_resizable(false)
-        .with_taskbar(false)
         .with_always_on_top()
-        .with_fullscreen(false)
-        .with_transparent(true)
-        .with_position(eframe::egui::pos2(logical_x, logical_y))
-        .with_inner_size(eframe::egui::vec2(logical_w, logical_h));
+        .with_fullscreen(true);
 
     eframe::NativeOptions {
         vsync: false,
