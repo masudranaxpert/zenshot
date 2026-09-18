@@ -21,6 +21,8 @@ pub fn send_command(cmd: IpcCommand) -> bool {
         return false;
     };
 
+    let _ = stream.set_recv_timeout(Some(std::time::Duration::from_millis(300)));
+
     let msg: &[u8] = match cmd {
         IpcCommand::Capture => b"capture\n",
         IpcCommand::Quit => b"quit\n",
@@ -60,10 +62,12 @@ pub fn start_listener(
                             trigger_flag.store(true, Ordering::SeqCst);
                             ctx.request_repaint();
                             let _ = stream.write_all(b"ok\n");
+                            let _ = stream.flush();
                         } else if text == "quit" {
                             quit_flag.store(true, Ordering::SeqCst);
                             ctx.request_repaint();
                             let _ = stream.write_all(b"ok\n");
+                            let _ = stream.flush();
                         }
                     }
                 }

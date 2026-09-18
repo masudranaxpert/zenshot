@@ -521,6 +521,7 @@ impl ZenShotApp {
 
     /// Hide the overlay immediately so Copy/Esc gives immediate visual feedback before background export.
     fn vanish(&mut self, ctx: &egui::Context) {
+        let _ = ctx;
         if self.vanished {
             return;
         }
@@ -530,7 +531,7 @@ impl ZenShotApp {
         unsafe {
             use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
             use windows_sys::Win32::UI::WindowsAndMessaging::{
-                SetForegroundWindow, ShowWindow, SW_HIDE,
+                SetForegroundWindow, SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
             };
             if self.hwnd != 0 {
                 let on: i32 = 1;
@@ -540,13 +541,23 @@ impl ZenShotApp {
                     &on as *const _ as *const _,
                     std::mem::size_of::<i32>() as u32,
                 );
-                ShowWindow(self.hwnd as _, SW_HIDE);
+                // Park off-screen instead of SW_HIDE so winit/User32 keeps processing request_repaint().
+                SetWindowPos(
+                    self.hwnd as _,
+                    std::ptr::null_mut(),
+                    -32000,
+                    -32000,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+                );
                 if self.prev_foreground != 0 {
                     SetForegroundWindow(self.prev_foreground as _);
                 }
             }
         }
 
+        #[cfg(not(windows))]
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
@@ -556,8 +567,20 @@ impl ZenShotApp {
         #[cfg(windows)]
         unsafe {
             use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
-            use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOW};
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetForegroundWindow, SetWindowPos, HWND_TOPMOST, SWP_NOSIZE,
+            };
             if self.hwnd != 0 {
+                let (vx, vy, _, _) = crate::capture::virtual_screen_bounds();
+                SetWindowPos(
+                    self.hwnd as _,
+                    HWND_TOPMOST,
+                    vx,
+                    vy,
+                    0,
+                    0,
+                    SWP_NOSIZE,
+                );
                 let off: i32 = 0;
                 let _ = DwmSetWindowAttribute(
                     self.hwnd as _,
@@ -565,7 +588,7 @@ impl ZenShotApp {
                     &off as *const _ as *const _,
                     std::mem::size_of::<i32>() as u32,
                 );
-                ShowWindow(self.hwnd as _, SW_SHOW);
+                SetForegroundWindow(self.hwnd as _);
             }
         }
 
@@ -865,78 +888,124 @@ impl eframe::App for ZenShotApp {
             }
         }
 
-        if self.is_warm && !self.is_active {
-            if !self.warmed_up {
-                self.warmed_up = true;
-                return;
-            }
-
+        if self.is_warm {
             let triggered = self
                 .trigger_flag
                 .as_ref()
                 .map(|f| f.swap(false, std::sync::atomic::Ordering::SeqCst))
                 .unwrap_or(false);
 
-            if !triggered {
-                return;
-            }
-
-            self.t0 = std::time::Instant::now();
-            self.config = Config::load_or_default();
-            #[cfg(windows)]
-            {
-                self.prev_foreground = unsafe {
-                    windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
-                } as isize;
-            }
-
-            let t_cap = std::time::Instant::now();
-            match crate::capture::capture_screen(self.config.capture_cursor) {
-                Ok(img) => {
-                    let size = [img.width() as usize, img.height() as usize];
-                    let pixels: Vec<egui::Color32> =
-                        bytemuck::cast_slice::<u8, egui::Color32>(img.as_raw()).to_vec();
-                    let color_image = egui::ColorImage { size, pixels };
-                    if let Some(tex) = &mut self.texture {
-                        tex.set(color_image, egui::TextureOptions::NEAREST);
-                    } else {
-                        self.texture = Some(ctx.load_texture(
-                            "desktop",
-                            color_image,
-                            egui::TextureOptions::NEAREST,
-                        ));
+            if !self.is_active {
+                if !self.warmed_up {
+                    self.warmed_up = true;
+                    #[cfg(windows)]
+                    unsafe {
+                        if self.hwnd != 0 {
+                            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                                SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+                            };
+                            // Park off-screen so eframe's first-frame set_visible(true) cannot intercept desktop clicks.
+                            SetWindowPos(
+                                self.hwnd as _,
+                                std::ptr::null_mut(),
+                                -32000,
+                                -32000,
+                                0,
+                                0,
+                                SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+                            );
+                        }
                     }
-                    self.screen_image = img;
-                    eprintln!("[ZenShot PERF] Warm capture + texture set: {:?}", t_cap.elapsed());
-                }
-                Err(err) => {
-                    eprintln!("Error capturing screen: {err}");
-                    self.quit(ctx);
                     return;
                 }
+
+                if !triggered {
+                    return;
+                }
+            } else if !triggered {
+                // Currently active and no new trigger received; proceed with normal rendering.
+            } else {
+                // Re-triggered while already active: reset and take a fresh capture.
+                self.vanish(ctx);
             }
 
-            self.is_active = true;
-            self.frame_count = 0;
-            self.selection = if self.config.keep_selection {
-                self.config.last_selection.and_then(|[x, y, w, h]| {
-                    if w > 6.0 && h > 6.0 {
-                        Some(Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h)))
-                    } else {
-                        None
+            if triggered {
+                self.t0 = std::time::Instant::now();
+                self.config = Config::load_or_default();
+                #[cfg(windows)]
+                {
+                    self.prev_foreground = unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow()
+                    } as isize;
+                }
+
+                let t_cap = std::time::Instant::now();
+                match crate::capture::capture_screen(self.config.capture_cursor) {
+                    Ok(img) => {
+                        let size = [img.width() as usize, img.height() as usize];
+                        let pixels: Vec<egui::Color32> =
+                            bytemuck::cast_slice::<u8, egui::Color32>(img.as_raw()).to_vec();
+                        let color_image = egui::ColorImage { size, pixels };
+                        if let Some(tex) = &mut self.texture {
+                            tex.set(color_image, egui::TextureOptions::NEAREST);
+                        } else {
+                            self.texture = Some(ctx.load_texture(
+                                "desktop",
+                                color_image,
+                                egui::TextureOptions::NEAREST,
+                            ));
+                        }
+                        self.screen_image = img;
+                        eprintln!("[ZenShot PERF] Warm capture + texture set: {:?}", t_cap.elapsed());
                     }
-                })
-            } else {
-                None
-            };
-            self.drag_state = DragState::None;
-            self.current_tool = Tool::Select;
-            self.annotations.clear();
-            self.active_text_pos = None;
-            self.text_input.clear();
-            self.export_error = None;
-            self.vanished = false;
-            ctx.request_repaint();
+                    Err(err) => {
+                        eprintln!("Error capturing screen: {err}");
+                        self.quit(ctx);
+                        return;
+                    }
+                }
+
+                self.is_active = true;
+                self.frame_count = 0;
+
+                #[cfg(windows)]
+                unsafe {
+                    if self.hwnd != 0 {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::{
+                            SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOSIZE,
+                        };
+                        let (vx, vy, _, _) = crate::capture::virtual_screen_bounds();
+                        SetWindowPos(
+                            self.hwnd as _,
+                            HWND_TOPMOST,
+                            vx,
+                            vy,
+                            0,
+                            0,
+                            SWP_NOSIZE | SWP_NOACTIVATE,
+                        );
+                    }
+                }
+                self.selection = if self.config.keep_selection {
+                    self.config.last_selection.and_then(|[x, y, w, h]| {
+                        if w > 6.0 && h > 6.0 {
+                            Some(Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h)))
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                };
+                self.drag_state = DragState::None;
+                self.current_tool = Tool::Select;
+                self.annotations.clear();
+                self.active_text_pos = None;
+                self.text_input.clear();
+                self.export_error = None;
+                self.vanished = false;
+                ctx.request_repaint();
+            }
         }
 
         // Capture live screen in Frame 1 while window is still DWM-cloaked (cold-start path).
@@ -986,6 +1055,7 @@ impl eframe::App for ZenShotApp {
 
             if ctx.input(|i| i.key_pressed(Key::Escape)) || hit(Key::X) {
                 self.quit(ctx);
+                return;
             }
             if hit(Key::A) {
                 self.selection = Some(screen_rect);

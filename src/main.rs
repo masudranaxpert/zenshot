@@ -85,6 +85,9 @@ fn run_capture() -> eframe::Result<()> {
         return Ok(());
     }
 
+    // Cold capture fallback: spawn a background warm instance for subsequent captures.
+    spawn_warm_process();
+
     let t0 = std::time::Instant::now();
     let _guard = instance::try_acquire("Local\\ZenShotCapture");
     if cfg!(windows) && _guard.is_none() {
@@ -166,6 +169,9 @@ fn run_capture() -> eframe::Result<()> {
 }
 
 fn run_warm() -> eframe::Result<()> {
+    #[cfg(windows)]
+    attach_parent_console();
+
     let _guard = instance::try_acquire("Local\\ZenShotWarm");
     if _guard.is_none() {
         return Ok(());
@@ -214,10 +220,19 @@ fn run_warm() -> eframe::Result<()> {
                             );
 
                             use windows_sys::Win32::UI::WindowsAndMessaging::{
-                                LoadCursorW, SetClassLongPtrW, ShowWindow, GCLP_HCURSOR,
-                                IDC_CROSS, SW_HIDE,
+                                LoadCursorW, SetClassLongPtrW, SetWindowPos, GCLP_HCURSOR,
+                                IDC_CROSS, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
                             };
-                            ShowWindow(win_hwnd, SW_HIDE);
+                            // Park off-screen immediately so first-frame reveal cannot intercept desktop clicks.
+                            SetWindowPos(
+                                win_hwnd,
+                                std::ptr::null_mut(),
+                                -32000,
+                                -32000,
+                                0,
+                                0,
+                                SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+                            );
                             let cross = LoadCursorW(std::ptr::null_mut(), IDC_CROSS);
                             if !cross.is_null() {
                                 SetClassLongPtrW(win_hwnd, GCLP_HCURSOR, cross as _);
@@ -238,6 +253,57 @@ fn run_warm() -> eframe::Result<()> {
             Ok(Box::new(app))
         }),
     )
+}
+
+fn spawn_warm_process() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    #[cfg(windows)]
+    {
+        use std::mem;
+        use std::ptr;
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            CreateProcessW, PROCESS_INFORMATION, STARTF_FORCEOFFFEEDBACK, STARTUPINFOW,
+        };
+
+        let exe_s = exe.to_string_lossy();
+        let mut cmd = crate::notify::wide(&format!("\"{exe_s}\" --warm"));
+        let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
+        si.cb = mem::size_of::<STARTUPINFOW>() as u32;
+        si.dwFlags = STARTF_FORCEOFFFEEDBACK;
+        let mut pi: PROCESS_INFORMATION = unsafe { mem::zeroed() };
+        let ok = unsafe {
+            CreateProcessW(
+                ptr::null(),
+                cmd.as_mut_ptr(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                0,
+                0,
+                ptr::null_mut(),
+                ptr::null(),
+                &si,
+                &mut pi,
+            )
+        };
+        if ok != 0 {
+            unsafe {
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new(exe)
+            .arg("--warm")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
 }
 
 fn overlay_native_options(_screen_image: Option<&image::RgbaImage>) -> eframe::NativeOptions {

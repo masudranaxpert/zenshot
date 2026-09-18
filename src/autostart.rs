@@ -94,12 +94,47 @@ mod windows_impl {
 pub use windows_impl::set_enabled;
 
 #[cfg(not(windows))]
-pub fn set_enabled(_on: bool) -> Result<(), String> {
-    Ok(())
+mod linux_impl {
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn autostart_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|p| p.join("autostart").join("zenshot.desktop"))
+    }
+
+    pub fn set_enabled(on: bool) -> Result<(), String> {
+        let Some(path) = autostart_path() else {
+            return Err("Could not determine autostart directory".into());
+        };
+
+        if on {
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let content = "[Desktop Entry]\n\
+                           Type=Application\n\
+                           Name=ZenShot\n\
+                           Comment=Featherlight screenshot capture\n\
+                           Exec=zenshot --warm\n\
+                           Icon=zenshot\n\
+                           Terminal=false\n\
+                           StartupNotify=false\n\
+                           Categories=Utility;\n\
+                           X-GNOME-Autostart-enabled=true\n";
+            fs::write(&path, content).map_err(|e| e.to_string())
+        } else {
+            if path.exists() {
+                let _ = fs::remove_file(&path);
+            }
+            Ok(())
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn is_enabled() -> bool {
+        autostart_path().map(|p| p.exists()).unwrap_or(false)
+    }
 }
 
 #[cfg(not(windows))]
-#[allow(dead_code)]
-pub fn is_enabled() -> bool {
-    false
-}
+pub use linux_impl::{is_enabled, set_enabled};
