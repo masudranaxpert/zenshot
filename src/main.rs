@@ -156,7 +156,7 @@ fn overlay_native_options(screen_image: &image::RgbaImage) -> eframe::NativeOpti
     }
 }
 
-fn display_scale_factor() -> f32 {
+pub(crate) fn display_scale_factor() -> f32 {
     #[cfg(windows)]
     {
         use windows_sys::Win32::Foundation::POINT;

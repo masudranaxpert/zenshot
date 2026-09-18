@@ -100,9 +100,66 @@ fn bar_length(n: f32, icon: f32) -> f32 {
 
 const TOOLBAR_GAP: f32 = 4.0;
 
-/// Screen region the floating bars may occupy, inset by a small margin from the overlay.
-fn toolbar_safe_bounds(screen: Rect) -> Rect {
-    screen.shrink(TOOLBAR_GAP)
+/// Screen region the floating bars may occupy, clipped to the monitor work area.
+fn toolbar_safe_bounds(sel: Rect, screen: Rect) -> Rect {
+    let inset = screen.shrink(TOOLBAR_GAP);
+    #[cfg(windows)]
+    {
+        if let Some(work) = monitor_work_area_points(sel.right_bottom()) {
+            let clipped = work.intersect(inset);
+            if clipped.width() >= BAR_THICKNESS && clipped.height() >= BAR_THICKNESS {
+                return clipped;
+            }
+        }
+    }
+    let _ = sel;
+    inset
+}
+
+#[cfg(windows)]
+fn monitor_work_area_points(anchor_pt: Pos2) -> Option<Rect> {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+
+    let scale = crate::display_scale_factor().max(1.0);
+    let (vx, vy, _, _) = crate::capture::virtual_screen_bounds();
+
+    let phys_pt = POINT {
+        x: (anchor_pt.x * scale).round() as i32 + vx,
+        y: (anchor_pt.y * scale).round() as i32 + vy,
+    };
+
+    unsafe {
+        let hmon = MonitorFromPoint(phys_pt, MONITOR_DEFAULTTONEAREST);
+        if hmon.is_null() {
+            return None;
+        }
+
+        let mut mi: MONITORINFO = std::mem::zeroed();
+        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(hmon, &mut mi) == 0 {
+            return None;
+        }
+
+        let mut dpi_x = 96u32;
+        let mut dpi_y = 96u32;
+        let mon_scale = if GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) == 0 && dpi_x > 0 {
+            (dpi_x as f32 / 96.0).max(1.0)
+        } else {
+            scale
+        };
+
+        let rc = mi.rcWork;
+        let left = (rc.left - vx) as f32 / mon_scale;
+        let top = (rc.top - vy) as f32 / mon_scale;
+        let right = (rc.right - vx) as f32 / mon_scale;
+        let bottom = (rc.bottom - vy) as f32 / mon_scale;
+
+        Some(Rect::from_min_max(Pos2::new(left, top), Pos2::new(right, bottom)))
+    }
 }
 
 fn clamp_pos(v: f32, lo: f32, hi: f32) -> f32 {
@@ -286,7 +343,8 @@ impl ZenShotApp {
         };
 
         let size = [screen_image.width() as usize, screen_image.height() as usize];
-        let pixels: Vec<egui::Color32> = bytemuck::cast_vec(screen_image.as_raw().clone());
+        let pixels: Vec<egui::Color32> =
+            bytemuck::cast_slice::<u8, egui::Color32>(screen_image.as_raw()).to_vec();
         let color_image = egui::ColorImage { size, pixels };
         let texture = ctx.load_texture("desktop", color_image, egui::TextureOptions::NEAREST);
 
@@ -476,7 +534,7 @@ impl ZenShotApp {
 
     /// Calculates exact screen bounds of the Horizontal and Vertical toolbars.
     fn get_toolbar_rects(&self, sel: Rect, screen_rect: Rect) -> (Rect, Rect) {
-        layout_toolbars(sel, toolbar_safe_bounds(screen_rect))
+        layout_toolbars(sel, toolbar_safe_bounds(sel, screen_rect))
     }
 }
 
@@ -994,10 +1052,16 @@ impl eframe::App for ZenShotApp {
                 });
         }
 
-        // Reveal window on frame 2: frame 1 completes GPU texture upload and swapchain presentation.
-        // Revealing on frame 2 avoids any unrendered flash, sizing handshake jerk, or blank frame.
         self.frame_count += 1;
-        if self.frame_count == 2 {
+        if self.frame_count == 1 && self.icons.is_none() {
+            self.icons = Some(ToolbarIcons::load(ctx));
+        }
+
+        // Reveal window on frame 2: frame 1 completes GPU texture upload and swapchain presentation.
+        // Request repaint on frame 1 to guarantee frame 2 triggers without waiting for user input.
+        if self.frame_count < 2 {
+            ctx.request_repaint();
+        } else if self.frame_count == 2 {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
@@ -1492,7 +1556,7 @@ mod tests {
     #[test]
     fn fullscreen_toolbars_stay_above_taskbar_and_do_not_overlap() {
         let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1920.0, 1080.0));
-        let safe = Rect::from_min_max(Pos2::new(4.0, 4.0), Pos2::new(1916.0, 1032.0));
+        let safe = toolbar_safe_bounds(screen, screen);
         let (h, v) = layout_toolbars(screen, safe);
         assert_bar_ok(h, safe);
         assert_bar_ok(v, safe);
@@ -1501,8 +1565,9 @@ mod tests {
 
     #[test]
     fn mid_screen_selection_keeps_toolbars_outside() {
-        let safe = Rect::from_min_max(Pos2::new(4.0, 4.0), Pos2::new(1916.0, 1032.0));
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1920.0, 1080.0));
         let sel = Rect::from_min_size(Pos2::new(400.0, 300.0), Vec2::new(240.0, 180.0));
+        let safe = toolbar_safe_bounds(sel, screen);
         let (h, v) = layout_toolbars(sel, safe);
         assert_bar_ok(h, safe);
         assert_bar_ok(v, safe);
