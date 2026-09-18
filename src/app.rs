@@ -122,7 +122,6 @@ fn monitor_work_area_points(anchor_pt: Pos2) -> Option<Rect> {
     use windows_sys::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
-    use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 
     let scale = crate::display_scale_factor().max(1.0);
     let (vx, vy, _, _) = crate::capture::virtual_screen_bounds();
@@ -144,19 +143,11 @@ fn monitor_work_area_points(anchor_pt: Pos2) -> Option<Rect> {
             return None;
         }
 
-        let mut dpi_x = 96u32;
-        let mut dpi_y = 96u32;
-        let mon_scale = if GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) == 0 && dpi_x > 0 {
-            (dpi_x as f32 / 96.0).max(1.0)
-        } else {
-            scale
-        };
-
         let rc = mi.rcWork;
-        let left = (rc.left - vx) as f32 / mon_scale;
-        let top = (rc.top - vy) as f32 / mon_scale;
-        let right = (rc.right - vx) as f32 / mon_scale;
-        let bottom = (rc.bottom - vy) as f32 / mon_scale;
+        let left = (rc.left - vx) as f32 / scale;
+        let top = (rc.top - vy) as f32 / scale;
+        let right = (rc.right - vx) as f32 / scale;
+        let bottom = (rc.bottom - vy) as f32 / scale;
 
         Some(Rect::from_min_max(Pos2::new(left, top), Pos2::new(right, bottom)))
     }
@@ -326,9 +317,61 @@ pub struct ZenShotApp {
     export_error: Option<String>,
     vanished: bool,
     frame_count: u32,
+    #[cfg(windows)]
+    hwnd: isize,
+    #[cfg(windows)]
+    prev_foreground: isize,
 }
 
 impl ZenShotApp {
+    #[cfg(windows)]
+    pub fn new(
+        config: Config,
+        screen_image: RgbaImage,
+        ctx: &egui::Context,
+        hwnd: isize,
+        prev_foreground: isize,
+    ) -> Self {
+        let selection = if config.keep_selection {
+            config.last_selection.and_then(|[x, y, w, h]| {
+                if w > 6.0 && h > 6.0 {
+                    Some(Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h)))
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+
+        let size = [screen_image.width() as usize, screen_image.height() as usize];
+        let pixels: Vec<egui::Color32> =
+            bytemuck::cast_slice::<u8, egui::Color32>(screen_image.as_raw()).to_vec();
+        let color_image = egui::ColorImage { size, pixels };
+        let texture = ctx.load_texture("desktop", color_image, egui::TextureOptions::NEAREST);
+
+        Self {
+            config,
+            screen_image,
+            texture: Some(texture),
+            icons: None,
+            selection,
+            drag_state: DragState::None,
+            current_tool: Tool::Select,
+            color_index: 0,
+            annotations: Vec::new(),
+            text_input: String::new(),
+            active_text_pos: None,
+            last_pointer: Pos2::ZERO,
+            export_error: None,
+            vanished: false,
+            frame_count: 0,
+            hwnd,
+            prev_foreground,
+        }
+    }
+
+    #[cfg(not(windows))]
     pub fn new(config: Config, screen_image: RgbaImage, ctx: &egui::Context) -> Self {
         let selection = if config.keep_selection {
             config.last_selection.and_then(|[x, y, w, h]| {
@@ -373,11 +416,34 @@ impl ZenShotApp {
             return;
         }
         self.vanished = true;
+
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                SetForegroundWindow, ShowWindow, SW_HIDE,
+            };
+            if self.hwnd != 0 {
+                ShowWindow(self.hwnd as _, SW_HIDE);
+                if self.prev_foreground != 0 {
+                    SetForegroundWindow(self.prev_foreground as _);
+                }
+            }
+        }
+
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
     fn restore(&mut self, ctx: &egui::Context) {
         self.vanished = false;
+
+        #[cfg(windows)]
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOW};
+            if self.hwnd != 0 {
+                ShowWindow(self.hwnd as _, SW_SHOW);
+            }
+        }
+
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
     }
 

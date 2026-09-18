@@ -74,6 +74,9 @@ fn run_capture() -> eframe::Result<()> {
         return Ok(());
     }
 
+    #[cfg(windows)]
+    let prev_foreground = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() } as isize;
+
     let config = Config::load_or_default();
 
     let screen_image = match capture::capture_screen(config.capture_cursor) {
@@ -93,17 +96,20 @@ fn run_capture() -> eframe::Result<()> {
         native_options,
         Box::new(move |cc| {
             #[cfg(windows)]
+            let mut hwnd = 0isize;
+            #[cfg(windows)]
             {
                 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
                 use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
 
                 if let Ok(handle) = cc.window_handle() {
                     if let RawWindowHandle::Win32(w32) = handle.as_raw() {
-                        let hwnd = w32.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+                        let win_hwnd = w32.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+                        hwnd = win_hwnd as isize;
                         let disable: i32 = 1;
                         unsafe {
                             let _ = DwmSetWindowAttribute(
-                                hwnd,
+                                win_hwnd,
                                 DWMWA_TRANSITIONS_FORCEDISABLED as u32,
                                 &disable as *const _ as *const _,
                                 std::mem::size_of::<i32>() as u32,
@@ -113,6 +119,9 @@ fn run_capture() -> eframe::Result<()> {
                 }
             }
 
+            #[cfg(windows)]
+            let app = ZenShotApp::new(config, screen_image, &cc.egui_ctx, hwnd, prev_foreground);
+            #[cfg(not(windows))]
             let app = ZenShotApp::new(config, screen_image, &cc.egui_ctx);
             Ok(Box::new(app))
         }),
@@ -144,7 +153,7 @@ fn overlay_native_options(screen_image: &image::RgbaImage) -> eframe::NativeOpti
         .with_always_on_top()
         .with_fullscreen(false)
         .with_visible(false)
-        .with_transparent(false)
+        .with_transparent(true)
         .with_position(eframe::egui::pos2(logical_x, logical_y))
         .with_inner_size(eframe::egui::vec2(logical_w, logical_h));
 
