@@ -301,11 +301,11 @@ enum DragState {
 }
 
 #[cfg(not(windows))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum PendingExport {
-    Copy,
-    Save,
-    Print,
+    Copy(Rect),
+    Save(Rect),
+    Print(Rect),
 }
 
 /// Main application state for ZenShot.
@@ -570,7 +570,11 @@ impl ZenShotApp {
         }
 
         #[cfg(not(windows))]
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1.0, 1.0)));
+        }
     }
 
     fn restore(&mut self, ctx: &egui::Context) {
@@ -602,6 +606,11 @@ impl ZenShotApp {
                 );
                 SetForegroundWindow(self.hwnd as _);
             }
+        }
+
+        #[cfg(not(windows))]
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
 
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -732,11 +741,11 @@ impl ZenShotApp {
     }
 
     #[cfg(not(windows))]
-    fn do_export(&mut self, ctx: &egui::Context, screen_rect: Rect, action: PendingExport) {
+    fn do_export(&mut self, ctx: &egui::Context, action: PendingExport) {
         match action {
-            PendingExport::Copy => self.execute_copy(ctx, screen_rect),
-            PendingExport::Save => self.execute_save(ctx, screen_rect),
-            PendingExport::Print => self.execute_print(ctx, screen_rect),
+            PendingExport::Copy(rect) => self.execute_copy(ctx, rect),
+            PendingExport::Save(rect) => self.execute_save(ctx, rect),
+            PendingExport::Print(rect) => self.execute_print(ctx, rect),
         }
     }
 
@@ -751,7 +760,7 @@ impl ZenShotApp {
 
         #[cfg(not(windows))]
         {
-            self.pending_export = Some(PendingExport::Save);
+            self.pending_export = Some(PendingExport::Save(screen_rect));
             ctx.request_repaint();
             return;
         }
@@ -770,7 +779,7 @@ impl ZenShotApp {
 
         #[cfg(not(windows))]
         {
-            self.pending_export = Some(PendingExport::Copy);
+            self.pending_export = Some(PendingExport::Copy(screen_rect));
             ctx.request_repaint();
             return;
         }
@@ -791,7 +800,7 @@ impl ZenShotApp {
 
         #[cfg(not(windows))]
         {
-            self.pending_export = Some(PendingExport::Print);
+            self.pending_export = Some(PendingExport::Print(screen_rect));
             ctx.request_repaint();
             return;
         }
@@ -946,8 +955,7 @@ impl eframe::App for ZenShotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         #[cfg(not(windows))]
         if let Some(action) = self.pending_export.take() {
-            let screen_rect = ctx.screen_rect();
-            self.do_export(ctx, screen_rect, action);
+            self.do_export(ctx, action);
             return;
         }
 
