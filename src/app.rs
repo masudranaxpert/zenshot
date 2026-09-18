@@ -419,10 +419,18 @@ impl ZenShotApp {
 
         #[cfg(windows)]
         unsafe {
+            use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
             use windows_sys::Win32::UI::WindowsAndMessaging::{
                 SetForegroundWindow, ShowWindow, SW_HIDE,
             };
             if self.hwnd != 0 {
+                let on: i32 = 1;
+                let _ = DwmSetWindowAttribute(
+                    self.hwnd as _,
+                    DWMWA_CLOAK as u32,
+                    &on as *const _ as *const _,
+                    std::mem::size_of::<i32>() as u32,
+                );
                 ShowWindow(self.hwnd as _, SW_HIDE);
                 if self.prev_foreground != 0 {
                     SetForegroundWindow(self.prev_foreground as _);
@@ -438,8 +446,16 @@ impl ZenShotApp {
 
         #[cfg(windows)]
         unsafe {
+            use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
             use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOW};
             if self.hwnd != 0 {
+                let off: i32 = 0;
+                let _ = DwmSetWindowAttribute(
+                    self.hwnd as _,
+                    DWMWA_CLOAK as u32,
+                    &off as *const _ as *const _,
+                    std::mem::size_of::<i32>() as u32,
+                );
                 ShowWindow(self.hwnd as _, SW_SHOW);
             }
         }
@@ -1123,11 +1139,26 @@ impl eframe::App for ZenShotApp {
             self.icons = Some(ToolbarIcons::load(ctx));
         }
 
-        // Reveal window on frame 2: frame 1 completes GPU texture upload and swapchain presentation.
-        // Request repaint on frame 1 to guarantee frame 2 triggers without waiting for user input.
+        // Uncloak window on frame 2: frame 1 completes swap_buffers and GPU presentation.
+        // DWM uncloaking reveals the presented frame instantly with zero flash or uninitialized buffer.
         if self.frame_count < 2 {
             ctx.request_repaint();
         } else if self.frame_count == 2 {
+            #[cfg(windows)]
+            unsafe {
+                use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
+                use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+                if self.hwnd != 0 {
+                    let off: i32 = 0;
+                    let _ = DwmSetWindowAttribute(
+                        self.hwnd as _,
+                        DWMWA_CLOAK as u32,
+                        &off as *const _ as *const _,
+                        std::mem::size_of::<i32>() as u32,
+                    );
+                    SetForegroundWindow(self.hwnd as _);
+                }
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }

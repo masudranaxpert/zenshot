@@ -100,18 +100,27 @@ fn run_capture() -> eframe::Result<()> {
             #[cfg(windows)]
             {
                 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-                use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
+                use windows_sys::Win32::Graphics::Dwm::{
+                    DwmSetWindowAttribute, DWMWA_CLOAK, DWMWA_TRANSITIONS_FORCEDISABLED,
+                };
 
                 if let Ok(handle) = cc.window_handle() {
                     if let RawWindowHandle::Win32(w32) = handle.as_raw() {
                         let win_hwnd = w32.hwnd.get() as windows_sys::Win32::Foundation::HWND;
                         hwnd = win_hwnd as isize;
                         let disable: i32 = 1;
+                        let cloak: i32 = 1;
                         unsafe {
                             let _ = DwmSetWindowAttribute(
                                 win_hwnd,
                                 DWMWA_TRANSITIONS_FORCEDISABLED as u32,
                                 &disable as *const _ as *const _,
+                                std::mem::size_of::<i32>() as u32,
+                            );
+                            let _ = DwmSetWindowAttribute(
+                                win_hwnd,
+                                DWMWA_CLOAK as u32,
+                                &cloak as *const _ as *const _,
                                 std::mem::size_of::<i32>() as u32,
                             );
                         }
@@ -152,7 +161,6 @@ fn overlay_native_options(screen_image: &image::RgbaImage) -> eframe::NativeOpti
         .with_taskbar(false)
         .with_always_on_top()
         .with_fullscreen(false)
-        .with_visible(false)
         .with_transparent(true)
         .with_position(eframe::egui::pos2(logical_x, logical_y))
         .with_inner_size(eframe::egui::vec2(logical_w, logical_h));

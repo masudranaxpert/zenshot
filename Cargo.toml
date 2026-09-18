@@ -1,6 +1,6 @@
 [package]
 name = "zenshot"
-version = "2.9.9"
+version = "3.0.0"
 edition = "2021"
 authors = ["Masud Rana <masudranaxpert@gmail.com>"]
 description = "Ultra-fast, featherlight cross-platform screen capture tool with zero disk I/O"
