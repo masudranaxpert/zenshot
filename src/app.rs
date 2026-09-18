@@ -916,6 +916,8 @@ impl eframe::App for ZenShotApp {
                             );
                         }
                     }
+                    #[cfg(not(windows))]
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                     return;
                 }
 
