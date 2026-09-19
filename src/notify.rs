@@ -1,7 +1,10 @@
 //! Tells the tray daemon (Windows) or `notify-send` (Linux) about copy/save.
 
+#[cfg(windows)]
 const DAEMON_CLASS: &str = "ZenShotDaemon";
+#[cfg(windows)]
 pub const WM_RELOAD_CONFIG: u32 = 0x8000 + 2; // WM_APP + 2
+#[cfg(windows)]
 const WM_COPYDATA: u32 = 0x004A;
 
 pub fn copied() {
@@ -80,6 +83,7 @@ fn linux_tell(title: &str, body: &str) {
         .spawn();
 }
 
+#[cfg(windows)]
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }

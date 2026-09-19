@@ -65,6 +65,7 @@ impl Hotkey {
     }
 
     /// Win32 `RegisterHotKey` modifier bitmask (without `MOD_NOREPEAT`).
+    #[cfg(windows)]
     pub fn native_modifiers(&self) -> u32 {
         let mut m = 0u32;
         if self.alt {

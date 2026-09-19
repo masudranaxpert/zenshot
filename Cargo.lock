@@ -3500,11 +3500,12 @@ dependencies = [
 
 [[package]]
 name = "zenshot"
-version = "3.1.8"
+version = "3.1.9"
 dependencies = [
  "arboard",
  "bytemuck",
  "chrono",
+ "core-graphics",
  "dirs",
  "eframe",
  "image",
@@ -3517,6 +3518,7 @@ dependencies = [
  "webbrowser",
  "windows-sys 0.59.0",
  "winres",
+ "x11rb",
  "zbus",
 ]
 

@@ -148,16 +148,53 @@ unsafe fn draw_cursor(hdc_mem: windows_sys::Win32::Graphics::Gdi::HDC, origin_x:
     );
 }
 
-/// Captures screen content on Linux (Wayland / X11) via the XDG Desktop Portal.
-#[cfg(not(target_os = "windows"))]
+/// Captures screen content on macOS using CoreGraphics.
+#[cfg(target_os = "macos")]
 pub fn capture_screen(_capture_cursor: bool) -> Result<RgbaImage, String> {
-    use std::time::Duration;
+    use core_graphics::display::CGDisplay;
 
-    // Retry once to absorb D-Bus daemon cold-start latency when waking from idle.
-    for attempt in 1..=2 {
-        match capture_portal(Duration::from_millis(3000)) {
+    let display = CGDisplay::main();
+    let cg_image = display
+        .image()
+        .ok_or_else(|| "CGDisplay::main().image() failed on macOS".to_string())?;
+
+    let width = cg_image.width();
+    let height = cg_image.height();
+    let data = cg_image.data();
+    let bytes = data.bytes();
+    let bytes_per_row = cg_image.bytes_per_row();
+
+    let mut buffer = Vec::with_capacity(width * height * 4);
+    for row in bytes.chunks_exact(bytes_per_row) {
+        buffer.extend_from_slice(&row[..width * 4]);
+    }
+
+    // CoreGraphics returns 32-bit BGRA; swap to RGBA in memory.
+    for bgra in buffer.chunks_exact_mut(4) {
+        bgra.swap(0, 2);
+    }
+
+    RgbaImage::from_raw(width as u32, height as u32, buffer)
+        .ok_or_else(|| "Failed to construct macOS in-memory image buffer".to_string())
+}
+
+/// Captures screen content on Linux (X11 direct or Wayland via XDG Desktop Portal).
+#[cfg(target_os = "linux")]
+pub fn capture_screen(_capture_cursor: bool) -> Result<RgbaImage, String> {
+    // Fast path: direct X11 shared-memory capture when running under pure X11.
+    if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some() {
+        if let Ok(img) = capture_x11_direct() {
+            return Ok(img);
+        }
+    }
+
+    // Wayland or X11 portal path: retry once to absorb D-Bus cold-start latency.
+    use std::time::Duration;
+    let timeouts = [Duration::from_millis(1200), Duration::from_millis(3000)];
+    for (attempt, &timeout) in timeouts.iter().enumerate() {
+        match capture_portal(timeout) {
             Ok(img) => return Ok(img),
-            Err(err) if attempt == 1 => {
+            Err(err) if attempt == 0 => {
                 eprintln!("ZenShot: portal capture retry ({err})");
                 continue;
             }
@@ -167,7 +204,58 @@ pub fn capture_screen(_capture_cursor: bool) -> Result<RgbaImage, String> {
     Err("Screenshot portal did not respond.".into())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+fn capture_x11_direct() -> Result<RgbaImage, String> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::randr::ConnectionExt as _;
+    use x11rb::protocol::xproto::{ConnectionExt as _, ImageFormat};
+
+    let (conn, screen_num) = x11rb::connect(None)
+        .map_err(|e| format!("X11 connect failed: {e}"))?;
+    let screen = &conn.setup().roots[screen_num];
+    let root = screen.root;
+
+    // Detect primary monitor bounds via RandR to isolate the active display.
+    let (x, y, width, height) = if let Ok(cookie) = conn.randr_get_monitors(root, true) {
+        if let Ok(reply) = cookie.reply() {
+            let primary = reply.monitors.iter().find(|m| m.primary)
+                .or_else(|| reply.monitors.first());
+            if let Some(m) = primary {
+                (m.x, m.y, m.width, m.height)
+            } else {
+                (0, 0, screen.width_in_pixels, screen.height_in_pixels)
+            }
+        } else {
+            (0, 0, screen.width_in_pixels, screen.height_in_pixels)
+        }
+    } else {
+        (0, 0, screen.width_in_pixels, screen.height_in_pixels)
+    };
+
+    let reply = conn
+        .get_image(ImageFormat::Z_PIXMAP, root, x, y, width, height, !0)
+        .map_err(|e| format!("X11 get_image call failed: {e}"))?
+        .reply()
+        .map_err(|e| format!("X11 get_image reply failed: {e}"))?;
+
+    let data = reply.data;
+    let w = width as usize;
+    let h = height as usize;
+    let mut rgba = vec![0u8; w * h * 4];
+
+    // X11 ZPixmap depth 24/32 is BGR0 / BGRA; swap B and R channels.
+    for (src, dst) in data.chunks_exact(4).zip(rgba.chunks_exact_mut(4)) {
+        dst[0] = src[2]; // R
+        dst[1] = src[1]; // G
+        dst[2] = src[0]; // B
+        dst[3] = 255;    // A
+    }
+
+    RgbaImage::from_raw(width as u32, height as u32, rgba)
+        .ok_or_else(|| "Failed to construct X11 in-memory image buffer".to_string())
+}
+
+#[cfg(target_os = "linux")]
 fn capture_portal(timeout: std::time::Duration) -> Result<RgbaImage, String> {
     use std::collections::HashMap;
     use zbus::blocking::{Connection, Proxy};
@@ -212,7 +300,7 @@ fn capture_portal(timeout: std::time::Duration) -> Result<RgbaImage, String> {
     .map_err(|e| format!("Screenshot proxy creation failed: {e}"))?;
 
     let is_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
-    let parent_window = if is_wayland { "wayland:" } else { "x11:" };
+    let parent_window = if is_wayland { "wayland:" } else { "" };
 
     portal_proxy
         .call_method("Screenshot", &(parent_window, options))
@@ -224,10 +312,15 @@ fn capture_portal(timeout: std::time::Duration) -> Result<RgbaImage, String> {
         let _ = tx.send(msg);
     });
 
-    let msg = rx
-        .recv_timeout(timeout)
-        .map_err(|_| "Screenshot portal timed out".to_string())?
-        .ok_or_else(|| "Portal signal stream closed unexpectedly".to_string())?;
+    let request_proxy_abort = request_proxy.clone();
+    let msg = match rx.recv_timeout(timeout) {
+        Ok(msg) => msg.ok_or_else(|| "Portal signal stream closed unexpectedly".to_string())?,
+        Err(_) => {
+            // Abort portal request to close the signal stream and unblock the spawned thread cleanly.
+            let _ = request_proxy_abort.call_method("Close", &());
+            return Err("Screenshot portal timed out".to_string());
+        }
+    };
 
     let body = msg.body();
     let (response_code, results): (u32, HashMap<String, Value>) = body
@@ -259,5 +352,35 @@ fn capture_portal(timeout: std::time::Duration) -> Result<RgbaImage, String> {
     // Immediately purge portal's temporary file to maintain zero disk footprint.
     let _ = std::fs::remove_file(&file_path);
 
-    Ok(img)
+    // If multi-monitor desktop was captured, crop to primary monitor to align with single-monitor overlay.
+    Ok(crop_to_primary_monitor_if_needed(img))
+}
+
+#[cfg(target_os = "linux")]
+fn crop_to_primary_monitor_if_needed(img: RgbaImage) -> RgbaImage {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::randr::ConnectionExt as _;
+
+    if let Ok((conn, screen_num)) = x11rb::connect(None) {
+        let root = conn.setup().roots[screen_num].root;
+        if let Ok(cookie) = conn.randr_get_monitors(root, true) {
+            if let Ok(reply) = cookie.reply() {
+                // Only crop if multi-monitor setup is active and dimensions exceed primary monitor.
+                if reply.monitors.len() > 1 {
+                    let primary = reply.monitors.iter().find(|m| m.primary)
+                        .or_else(|| reply.monitors.first());
+                    if let Some(m) = primary {
+                        let mx = m.x.max(0) as u32;
+                        let my = m.y.max(0) as u32;
+                        let mw = m.width as u32;
+                        let mh = m.height as u32;
+                        if mx + mw <= img.width() && my + mh <= img.height() && mw > 0 && mh > 0 {
+                            return image::imageops::crop_imm(&img, mx, my, mw, mh).to_image();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    img
 }

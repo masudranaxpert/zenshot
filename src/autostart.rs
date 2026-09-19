@@ -146,4 +146,5 @@ mod linux_impl {
 }
 
 #[cfg(not(windows))]
+#[allow(unused_imports)]
 pub use linux_impl::{is_enabled, set_enabled};

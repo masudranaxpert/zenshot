@@ -6,6 +6,7 @@ use std::sync::Arc;
 pub const SOCKET_NAME: &str = "zenshot.sock";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum IpcCommand {
     Capture,
     Quit,
