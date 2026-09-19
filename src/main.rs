@@ -15,6 +15,7 @@ mod icons;
 mod instance;
 mod notify;
 mod options;
+mod sounds;
 
 use app::ZenShotApp;
 use config::Config;
@@ -97,7 +98,9 @@ fn run_capture() -> eframe::Result<()> {
 
     let t0 = std::time::Instant::now();
     let _guard = instance::try_acquire("Local\\ZenShotCapture");
-    if cfg!(windows) && _guard.is_none() {
+    if _guard.is_none() {
+        // A capture overlay is already open — a repeated shortcut press must
+        // not stack a second fullscreen window over it.
         return Ok(());
     }
 

@@ -410,6 +410,19 @@ impl OptionsApp {
                 .size(12.0)
                 .color(INK_MUTED),
             );
+            ui.add_space(10.0);
+            ui.checkbox(
+                &mut self.config.shutter_sound,
+                "Play a shutter sound when taking a screenshot",
+            );
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(
+                    "The screenshot \"snap\" is the desktop's screen-capture theme sound (e.g. GNOME plays it for any app's capture). Unchecking mutes it.",
+                )
+                .size(12.0)
+                .color(INK_MUTED),
+            );
         });
 
         ui.add_space(6.0);
@@ -548,6 +561,11 @@ impl OptionsApp {
             return;
         }
         if let Err(err) = crate::autostart::set_enabled(self.config.autostart) {
+            self.status = Some(err);
+            return;
+        }
+        #[cfg(not(windows))]
+        if let Err(err) = crate::sounds::apply_shutter_sound(self.config.shutter_sound) {
             self.status = Some(err);
             return;
         }

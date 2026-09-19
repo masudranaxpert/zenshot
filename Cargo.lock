@@ -4257,6 +4257,7 @@ dependencies = [
  "eframe",
  "image",
  "interprocess",
+ "libc",
  "raw-window-handle",
  "serde",
  "toml 0.8.23",

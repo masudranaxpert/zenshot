@@ -71,6 +71,10 @@ pub struct Config {
     /// Direct grab on X11, bypassing portal dialogs.
     #[serde(default = "default_true")]
     pub legacy_x11_capture: bool,
+    /// Whether the desktop's screenshot (shutter) sound is allowed. ZenShot
+    /// toggles the freedesktop `screen-capture` theme event to honour this.
+    #[serde(default = "default_true")]
+    pub shutter_sound: bool,
 }
 
 impl Default for Config {
@@ -96,6 +100,7 @@ impl Default for Config {
             hotkey_save_fullscreen: Hotkey::ctrl_alt_s(),
             hotkey_save_fullscreen_enabled: false,
             legacy_x11_capture: true,
+            shutter_sound: true,
         }
     }
 }

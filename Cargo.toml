@@ -21,6 +21,9 @@ interprocess = "2.2"
 
 bytemuck = "1.25"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
 windows-sys = { version = "0.59", features = [
