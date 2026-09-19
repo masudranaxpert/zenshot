@@ -372,37 +372,21 @@ fn overlay_native_options(_screen_image: Option<&image::RgbaImage>) -> eframe::N
     }
 }
 
+#[cfg(windows)]
 pub(crate) fn display_scale_factor() -> f32 {
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::Foundation::POINT;
-        use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
-        use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
+    use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 
-        let pt = POINT { x: 0, y: 0 };
-        let hmon = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY) };
-        let mut dpi_x = 96u32;
-        let mut dpi_y = 96u32;
-        let res = unsafe { GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
-        if res == 0 && dpi_x > 0 {
-            (dpi_x as f32 / 96.0).max(1.0)
-        } else {
-            (unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() } as f32 / 96.0).max(1.0)
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        let Ok(monitors) = xcap::Monitor::all() else {
-            return 1.0;
-        };
-        let monitor = monitors
-            .iter()
-            .find(|m| m.is_primary().unwrap_or(false))
-            .or_else(|| monitors.first());
-        monitor
-            .and_then(|m| m.scale_factor().ok())
-            .unwrap_or(1.0)
-            .max(1.0)
+    let pt = POINT { x: 0, y: 0 };
+    let hmon = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY) };
+    let mut dpi_x = 96u32;
+    let mut dpi_y = 96u32;
+    let res = unsafe { GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) };
+    if res == 0 && dpi_x > 0 {
+        (dpi_x as f32 / 96.0).max(1.0)
+    } else {
+        (unsafe { windows_sys::Win32::UI::HiDpi::GetDpiForSystem() } as f32 / 96.0).max(1.0)
     }
 }
 

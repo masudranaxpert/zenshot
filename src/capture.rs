@@ -148,19 +148,116 @@ unsafe fn draw_cursor(hdc_mem: windows_sys::Win32::Graphics::Gdi::HDC, origin_x:
     );
 }
 
-/// Captures screen content on Linux (X11 / Wayland) using xcap.
+/// Captures screen content on Linux (Wayland / X11) via the XDG Desktop Portal.
 #[cfg(not(target_os = "windows"))]
 pub fn capture_screen(_capture_cursor: bool) -> Result<RgbaImage, String> {
-    let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
-    let primary = monitors
-        .into_iter()
-        .find(|m| m.is_primary().unwrap_or(false))
-        .or_else(|| xcap::Monitor::all().ok()?.into_iter().next())
-        .ok_or_else(|| "No active monitor found for capture".to_string())?;
+    use std::time::Duration;
 
-    primary.capture_image().map_err(|e| {
-        format!(
-            "{e}. On Wayland grant the portal screenshot permission; on X11 check $DISPLAY."
-        )
-    })
+    // Retry once to absorb D-Bus daemon cold-start latency when waking from idle.
+    for attempt in 1..=2 {
+        match capture_portal(Duration::from_millis(3000)) {
+            Ok(img) => return Ok(img),
+            Err(err) if attempt == 1 => {
+                eprintln!("ZenShot: portal capture retry ({err})");
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err("Screenshot portal did not respond.".into())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn capture_portal(timeout: std::time::Duration) -> Result<RgbaImage, String> {
+    use std::collections::HashMap;
+    use zbus::blocking::{Connection, Proxy};
+    use zbus::zvariant::Value;
+
+    let conn = Connection::session().map_err(|e| format!("D-Bus session error: {e}"))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let token = format!("zenshot_{}_{}", std::process::id(), now);
+
+    let unique_name = conn.unique_name().ok_or("No D-Bus unique name")?;
+    let sender_token = unique_name.trim_start_matches(':').replace('.', "_");
+    let request_path = format!("/org/freedesktop/portal/desktop/request/{sender_token}/{token}");
+
+    let request_proxy = Proxy::new(
+        &conn,
+        "org.freedesktop.portal.Desktop",
+        request_path.as_str(),
+        "org.freedesktop.portal.Request",
+    )
+    .map_err(|e| format!("Request proxy creation failed: {e}"))?;
+
+    // Synchronously subscribe to Response signal BEFORE calling Screenshot to prevent race condition.
+    let mut signal_stream = request_proxy
+        .receive_signal("Response")
+        .map_err(|e| format!("Portal signal subscribe failed: {e}"))?;
+
+    let mut options: HashMap<&str, Value> = HashMap::new();
+    options.insert("handle_token", Value::from(&token));
+    options.insert("interactive", Value::from(false));
+    options.insert("modal", Value::from(false));
+
+    let portal_proxy = Proxy::new(
+        &conn,
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.portal.Screenshot",
+    )
+    .map_err(|e| format!("Screenshot proxy creation failed: {e}"))?;
+
+    let is_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let parent_window = if is_wayland { "wayland:" } else { "x11:" };
+
+    portal_proxy
+        .call_method("Screenshot", &(parent_window, options))
+        .map_err(|e| format!("Screenshot portal call failed: {e}"))?;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let msg = signal_stream.next();
+        let _ = tx.send(msg);
+    });
+
+    let msg = rx
+        .recv_timeout(timeout)
+        .map_err(|_| "Screenshot portal timed out".to_string())?
+        .ok_or_else(|| "Portal signal stream closed unexpectedly".to_string())?;
+
+    let body = msg.body();
+    let (response_code, results): (u32, HashMap<String, Value>) = body
+        .deserialize()
+        .map_err(|e| format!("Failed to deserialize portal response: {e}"))?;
+
+    if response_code != 0 {
+        return Err(format!("Screenshot portal cancelled or failed (code {response_code})"));
+    }
+
+    let uri_val = results
+        .get("uri")
+        .ok_or_else(|| "No URI returned in portal response".to_string())?;
+
+    let uri_str = match uri_val {
+        Value::Str(s) => s.as_str(),
+        _ => return Err("Invalid URI format in portal response".to_string()),
+    };
+
+    let file_path = url::Url::parse(uri_str)
+        .map_err(|e| format!("Invalid URI '{uri_str}': {e}"))?
+        .to_file_path()
+        .map_err(|_| format!("URI is not a valid local path: {uri_str}"))?;
+
+    let img = image::open(&file_path)
+        .map_err(|e| format!("Failed to open captured image: {e}"))?
+        .to_rgba8();
+
+    // Immediately purge portal's temporary file to maintain zero disk footprint.
+    let _ = std::fs::remove_file(&file_path);
+
+    Ok(img)
 }

@@ -1,6 +1,6 @@
 [package]
 name = "zenshot"
-version = "3.1.7"
+version = "3.1.8"
 edition = "2021"
 authors = ["Masud Rana <masudranaxpert@gmail.com>"]
 description = "Ultra-fast, featherlight cross-platform screen capture tool with zero disk I/O"
@@ -9,7 +9,6 @@ license = "MIT"
 
 [dependencies]
 eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow"] }
-xcap = "0.9"
 arboard = { version = "3", features = ["wayland-data-control"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -23,6 +22,10 @@ bytemuck = "1.25"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(not(windows))'.dependencies]
+zbus = "5"
+url = "2.5"
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
