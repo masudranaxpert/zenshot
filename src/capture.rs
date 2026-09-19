@@ -151,6 +151,18 @@ unsafe fn draw_cursor(hdc_mem: windows_sys::Win32::Graphics::Gdi::HDC, origin_x:
 /// Captures screen content on macOS using CoreGraphics.
 #[cfg(target_os = "macos")]
 pub fn capture_screen(_capture_cursor: bool) -> Result<RgbaImage, String> {
+    extern "C" {
+        fn CGPreflightScreenCaptureAccess() -> bool;
+        fn CGRequestScreenCaptureAccess() -> bool;
+    }
+
+    unsafe {
+        if !CGPreflightScreenCaptureAccess() {
+            let _ = CGRequestScreenCaptureAccess();
+            return Err("Screen Recording permission required. Please allow ZenShot in System Settings -> Privacy & Security -> Screen Recording and retry.".to_string());
+        }
+    }
+
     use core_graphics::display::CGDisplay;
 
     let display = CGDisplay::main();
@@ -188,13 +200,12 @@ pub fn capture_screen(_capture_cursor: bool) -> Result<RgbaImage, String> {
         }
     }
 
-    // Wayland or X11 portal path: retry once to absorb D-Bus cold-start latency.
+    // Wayland or X11 portal path: allow 4000ms to accommodate portal screenshot animation.
     use std::time::Duration;
-    let timeouts = [Duration::from_millis(1200), Duration::from_millis(3000)];
-    for (attempt, &timeout) in timeouts.iter().enumerate() {
-        match capture_portal(timeout) {
+    for attempt in 1..=2 {
+        match capture_portal(Duration::from_millis(4000)) {
             Ok(img) => return Ok(img),
-            Err(err) if attempt == 0 => {
+            Err(err) if attempt == 1 => {
                 eprintln!("ZenShot: portal capture retry ({err})");
                 continue;
             }
